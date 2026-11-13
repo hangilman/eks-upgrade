@@ -50,22 +50,10 @@ cd eks-upgrade
 ```
 
 ```powershell
-py -3 -m venv .venv
+.\setup.cmd
 ```
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-```powershell
-pip install -e .
-```
-
-`Activate.ps1` 에서 **"스크립트를 실행할 수 없으므로…"** 오류가 나면 아래를 한 번 실행한 뒤 다시 활성화하세요.
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
+`setup.cmd` 가 가상환경(`.venv`) 생성과 설치를 한 번에 합니다. `.cmd` 파일은 PowerShell 실행 정책(Execution Policy)의 제한을 받지 않으므로 **`Activate.ps1` 을 쓸 필요가 없습니다.**
 
 **③ GitHub 로그인** (최초 1회, 브라우저가 열림)
 
@@ -73,28 +61,16 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 gh auth login
 ```
 
-설치 확인: `eks-precheck --help` 가 사용법을 보여주면 성공입니다.
+로그인해 두면 도구가 `gh auth token` 으로 토큰을 자동으로 가져오므로 토큰을 직접 넣을 필요가 없습니다.
+
+설치 확인: `.\eks-precheck.cmd --help` 가 사용법을 보여주면 성공입니다.
 
 ### 2. 실행 (Windows)
 
-새 PowerShell 을 열 때마다:
+`eks-upgrade` 폴더에서:
 
 ```powershell
-cd eks-upgrade
-```
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-```powershell
-$env:GITHUB_TOKEN = gh auth token
-```
-
-입력 파일 만들기 → 편집 → 실행:
-
-```powershell
-eks-precheck init
+.\eks-precheck.cmd init
 ```
 
 ```powershell
@@ -102,8 +78,24 @@ notepad env.yaml
 ```
 
 ```powershell
-eks-precheck run env.yaml
+.\eks-precheck.cmd run env.yaml
 ```
+
+<details>
+<summary>Activate.ps1 로 가상환경을 활성화해서 쓰고 싶다면</summary>
+
+"이 시스템에서 스크립트를 실행할 수 없으므로…" 오류가 나면, 현재 창에서만 정책을 풀고 활성화합니다 (창을 닫으면 원복됨).
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+이후에는 `eks-precheck run env.yaml` 처럼 `.cmd` 없이 실행할 수 있습니다. 회사 정책(GPO)으로 막혀 있으면 `.\eks-precheck.cmd` 를 쓰세요.
+</details>
 
 리포트 열기 (VS Code 의 Markdown 미리보기 `Ctrl+Shift+V` 로 보면 가장 읽기 좋습니다):
 
@@ -111,7 +103,7 @@ eks-precheck run env.yaml
 code .\reports\
 ```
 
-> ⚠️ Windows 에서는 `eks-precheck run env.yaml -o - > report.md` 처럼 **`>` 리다이렉트를 쓰지 마세요.** PowerShell 이 인코딩을 바꿔 한글/이모지가 깨집니다. 기본 저장(`reports\`) 또는 `-o report.md` 를 쓰세요.
+> ⚠️ Windows 에서는 `.\eks-precheck.cmd run env.yaml -o - > report.md` 처럼 **`>` 리다이렉트를 쓰지 마세요.** PowerShell 이 인코딩을 바꿔 한글/이모지가 깨집니다. 기본 저장(`reports\`) 또는 `-o report.md` 를 쓰세요.
 
 내 add-on 버전 확인 (AWS CLI / kubectl 이 설정되어 있을 때):
 
@@ -289,9 +281,10 @@ addons:
 
 | 증상 | Windows | Linux / macOS |
 |---|---|---|
-| `eks-precheck` 명령을 찾을 수 없음 | `.\.venv\Scripts\Activate.ps1` 실행 여부 확인 | `source .venv/bin/activate` 실행 여부 확인 |
+| `스크립트를 실행할 수 없으므로…` (Activate.ps1) | `.\eks-precheck.cmd` 사용 (활성화 불필요) | - |
+| `eks-precheck` 명령을 찾을 수 없음 | `.\eks-precheck.cmd` 로 실행 (없으면 `.\setup.cmd` 먼저) | `source .venv/bin/activate` 실행 여부 확인 |
 | `python`/`py`/`git` 명령을 찾을 수 없음 | 설치 후 PowerShell 을 새로 열기 | 패키지 설치 확인 |
-| `rate limit 초과` | `$env:GITHUB_TOKEN = gh auth token` 후 재실행 | `export GITHUB_TOKEN=$(gh auth token)` 후 재실행 |
+| `rate limit 초과` | `gh auth login` 확인 또는 `$env:GITHUB_TOKEN = gh auth token` 후 재실행 | `export GITHUB_TOKEN=$(gh auth token)` 후 재실행 |
 | 회사 프록시/SSL 오류 (`SSLError`, `CERTIFICATE_VERIFY_FAILED`) | `$env:HTTPS_PROXY = "http://프록시:포트"`, 사내 CA 는 `$env:REQUESTS_CA_BUNDLE = "C:\경로\ca.pem"` | `export HTTPS_PROXY=...`, `export REQUESTS_CA_BUNDLE=/경로/ca.pem` |
 | `버전 ... 을 따옴표로 감싸 주세요` | `env.yaml` 의 버전을 `"1.30"` 처럼 따옴표로 | 동일 |
 | `알 수 없는 컴포넌트` | 해당 add-on 아래에 `repo: owner/name` 추가 | 동일 |
