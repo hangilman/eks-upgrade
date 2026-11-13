@@ -11,7 +11,15 @@ from typing import Any
 
 import requests
 
-DEFAULT_CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "eks-precheck"
+def _default_cache_dir() -> Path:
+    if os.name == "nt":  # Windows: %LOCALAPPDATA%\eks-precheck\cache
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return Path(base) / "eks-precheck" / "cache"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "eks-precheck"
+
+
+DEFAULT_CACHE_DIR = _default_cache_dir()
 DEFAULT_TTL = 6 * 3600
 
 
@@ -48,7 +56,7 @@ class HttpClient:
         cache_file = self._cache_file(key)
         if cache_file and cache_file.exists():
             try:
-                cached = json.loads(cache_file.read_text())
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
                 if time.time() - cached["ts"] < self.ttl:
                     return cached["data"]
             except (ValueError, KeyError, OSError):
@@ -76,7 +84,7 @@ class HttpClient:
         if cache_file:
             try:
                 cache_file.parent.mkdir(parents=True, exist_ok=True)
-                cache_file.write_text(json.dumps({"ts": time.time(), "data": data}))
+                cache_file.write_text(json.dumps({"ts": time.time(), "data": data}), encoding="utf-8")
             except OSError:
                 pass
         return data

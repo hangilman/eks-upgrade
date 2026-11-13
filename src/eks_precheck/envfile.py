@@ -10,6 +10,7 @@ import yaml
 
 from . import versions
 from .models import NodeGroup
+from .textio import read_user_text
 
 
 class InputError(ValueError):
@@ -48,9 +49,11 @@ def _minor(value, where: str) -> str:
 
 def load(path: str | Path, known: dict[str, dict]) -> EnvInput:
     try:
-        data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(read_user_text(path)) or {}
     except FileNotFoundError as e:
         raise InputError(f"입력 파일이 없습니다: {path}  (템플릿 생성: eks-precheck init)") from e
+    except UnicodeDecodeError as e:
+        raise InputError(f"{path}: 파일 인코딩을 읽을 수 없습니다. UTF-8 로 저장해 주세요.") from e
     except yaml.YAMLError as e:
         raise InputError(f"YAML 형식 오류: {e}") from e
 

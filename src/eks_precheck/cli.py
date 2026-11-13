@@ -84,6 +84,8 @@ def _http(args, log) -> HttpClient:
 def _write(report, args, suffix: str, log) -> None:
     text = render(report, limit=args.max_items)
     if args.output == "-":
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")  # Windows 리다이렉트 시 cp949 로 이모지 인코딩 실패 방지
         sys.stdout.write(text)
     else:
         out = Path(args.output or f"reports/{dt.date.today():%Y%m%d}-{report.from_minor}-to-{report.to_minor}{suffix}.md")
@@ -142,6 +144,9 @@ def _cluster(args, log) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")  # 표현 못 하는 문자 때문에 중단되지 않도록
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()

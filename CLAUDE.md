@@ -23,8 +23,9 @@ EKS 업그레이드 전 사전 조사(Release note, CHANGELOG, 이슈 확인)를
 - 클러스터 조회는 **read-only API 만** 사용한다. 쓰기 API 를 추가하지 않는다.
 - 외부 수집 실패는 예외로 중단하지 않고 `report.warnings` 에 기록한 뒤 계속 진행한다.
 - 리포트 문구는 한국어, 기술 용어/명령어는 영어 원문 유지.
+- Windows / Linux 모두 지원한다. 파일 IO 는 항상 `encoding=` 을 명시하고, 사용자 파일은 `textio.read_user_text` 로 읽는다. 셸 명령 예시는 OS 별로 나누거나 양쪽에서 동작하는 한 줄로 쓴다.
 - 테스트는 네트워크 없이 `tests/fixtures/` 와 `FakeHttp`, 가짜 EKS client 로 작성한다.
 
 ## 명령
-- 테스트: `pytest`
+- 테스트: `pytest` (인코딩 누락 점검: `python -X warn_default_encoding -W error::EncodingWarning -m pytest`)
 - 실행 예: `eks-precheck init && eks-precheck run env.yaml --no-issues -o -`

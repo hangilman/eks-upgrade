@@ -7,15 +7,137 @@ Kubernetes CHANGELOG, EKS 릴리스 노트, 각 add-on 의 GitHub Release 를 �
 env.yaml (내 환경)  ──▶  eks-precheck run env.yaml  ──▶  reports/20261113-1.31-to-1.33.md
 ```
 
+Windows / Linux(macOS 포함) 모두 지원합니다. **설치와 실행 명령만 OS 별로 다르고, `env.yaml` 작성법과 리포트는 같습니다.**
+
+| 단계 | Windows | Linux / macOS |
+|---|---|---|
+| 1. 설치 (최초 1회) | [Windows 설치](#1-설치-windows) | [Linux 설치](#1-설치-linux--macos) |
+| 2. 실행 (매번) | [Windows 실행](#2-실행-windows) | [Linux 실행](#2-실행-linux--macos) |
+| 3. env.yaml 작성 | [공통](#3-envyaml-작성-공통) | [공통](#3-envyaml-작성-공통) |
+
 ---
 
-## 빠른 시작 (처음 한 번, 5분)
+## Windows
 
-### 1. 준비물
-- Python 3.10 이상 (`python3 --version` 으로 확인)
-- (권장) GitHub CLI `gh` 로그인 상태 — GitHub API 호출 제한을 피하기 위해 사용합니다
+> 모든 명령은 **PowerShell** 기준입니다. (시작 메뉴 → "Terminal" 또는 "PowerShell")
 
-### 2. 설치
+### 1. 설치 (Windows)
+
+**① 준비물 설치** — 이미 있으면 건너뜁니다. 설치 후에는 PowerShell 을 **새로 열어야** 명령이 인식됩니다.
+
+```powershell
+winget install -e --id Python.Python.3.12
+```
+
+```powershell
+winget install -e --id Git.Git
+```
+
+```powershell
+winget install -e --id GitHub.cli
+```
+
+> python.org 설치 파일을 쓸 경우 첫 화면에서 **"Add python.exe to PATH"** 를 체크하세요.
+
+**② 코드 받기 & 설치**
+
+```powershell
+git clone https://github.com/hangilman/eks-upgrade.git
+```
+
+```powershell
+cd eks-upgrade
+```
+
+```powershell
+py -3 -m venv .venv
+```
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+```powershell
+pip install -e .
+```
+
+`Activate.ps1` 에서 **"스크립트를 실행할 수 없으므로…"** 오류가 나면 아래를 한 번 실행한 뒤 다시 활성화하세요.
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+**③ GitHub 로그인** (최초 1회, 브라우저가 열림)
+
+```powershell
+gh auth login
+```
+
+설치 확인: `eks-precheck --help` 가 사용법을 보여주면 성공입니다.
+
+### 2. 실행 (Windows)
+
+새 PowerShell 을 열 때마다:
+
+```powershell
+cd eks-upgrade
+```
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+```powershell
+$env:GITHUB_TOKEN = gh auth token
+```
+
+입력 파일 만들기 → 편집 → 실행:
+
+```powershell
+eks-precheck init
+```
+
+```powershell
+notepad env.yaml
+```
+
+```powershell
+eks-precheck run env.yaml
+```
+
+리포트 열기 (VS Code 의 Markdown 미리보기 `Ctrl+Shift+V` 로 보면 가장 읽기 좋습니다):
+
+```powershell
+code .\reports\
+```
+
+> ⚠️ Windows 에서는 `eks-precheck run env.yaml -o - > report.md` 처럼 **`>` 리다이렉트를 쓰지 마세요.** PowerShell 이 인코딩을 바꿔 한글/이모지가 깨집니다. 기본 저장(`reports\`) 또는 `-o report.md` 를 쓰세요.
+
+내 add-on 버전 확인 (AWS CLI / kubectl 이 설정되어 있을 때):
+
+```powershell
+aws eks describe-addon --cluster-name <클러스터> --addon-name vpc-cni --query addon.addonVersion --output text
+```
+
+```powershell
+(kubectl get deploy -A -o jsonpath='{..image}') -split ' ' | Select-String 'karpenter|load-balancer'
+```
+
+---
+
+## Linux / macOS
+
+### 1. 설치 (Linux / macOS)
+
+**① 준비물** — Python 3.10 이상, git, (권장) GitHub CLI `gh`
+
+```bash
+python3 --version
+```
+
+없으면 설치합니다. (Ubuntu: `sudo apt install python3 python3-venv git gh`, Amazon Linux: `sudo dnf install python3 git`, macOS: `brew install python git gh`)
+
+**② 코드 받기 & 설치**
 
 ```bash
 git clone https://github.com/hangilman/eks-upgrade.git
@@ -37,34 +159,65 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+**③ GitHub 로그인** (최초 1회)
+
+```bash
+gh auth login
+```
+
 설치 확인: `eks-precheck --help` 가 사용법을 보여주면 성공입니다.
 
-> 다음에 새 터미널에서 쓸 때는 `cd eks-upgrade && source .venv/bin/activate` 만 하면 됩니다.
+### 2. 실행 (Linux / macOS)
 
-### 3. GitHub 토큰 설정 (권장)
+새 터미널을 열 때마다:
+
+```bash
+cd eks-upgrade
+```
+
+```bash
+source .venv/bin/activate
+```
 
 ```bash
 export GITHUB_TOKEN=$(gh auth token)
 ```
 
-`gh` 가 없으면 생략해도 실행은 되지만, 시간당 60회 제한에 걸려 add-on 분석이 일부 빠질 수 있습니다.
-(GitHub → Settings → Developer settings 에서 권한 없는 토큰을 만들어 `export GITHUB_TOKEN=...` 해도 됩니다.)
-
----
-
-## 사용법 (매번)
-
-### 1단계: 입력 파일 만들기
+입력 파일 만들기 → 편집 → 실행:
 
 ```bash
 eks-precheck init
 ```
 
-현재 폴더에 `env.yaml` 이 생깁니다.
+```bash
+vi env.yaml
+```
 
-### 2단계: 내 환경 입력
+```bash
+eks-precheck run env.yaml
+```
 
-`env.yaml` 을 열어 **현재/목표 버전과 사용 중인 add-on 버전**을 적습니다. 적은 것만 분석합니다.
+리포트는 `reports/` 에 생성됩니다. 터미널에서 바로 보려면 `-o -` 를 붙이세요.
+
+```bash
+eks-precheck run env.yaml -o - | less
+```
+
+내 add-on 버전 확인 (AWS CLI / kubectl 이 설정되어 있을 때):
+
+```bash
+aws eks describe-addon --cluster-name <클러스터> --addon-name vpc-cni --query addon.addonVersion --output text
+```
+
+```bash
+kubectl get deploy -A -o jsonpath='{..image}' | tr ' ' '\n' | grep -E 'karpenter|load-balancer'
+```
+
+---
+
+## 3. env.yaml 작성 (공통)
+
+`eks-precheck init` 으로 만든 `env.yaml` 에 **현재/목표 버전과 사용 중인 add-on 버전**을 적습니다. **적은 것만 분석합니다.**
 
 ```yaml
 cluster:
@@ -84,19 +237,11 @@ nodegroups:            # (선택) AMI 타입 / 버전 차이 점검
 ```
 
 - 버전은 **꼭 따옴표로** 감싸세요. (`1.30` 을 그냥 쓰면 YAML 이 `1.3` 으로 읽습니다)
+- 들여쓰기는 **스페이스 2칸** (Tab 문자 사용 불가)
 - 기본 지원 add-on: `vpc-cni`, `coredns`, `kube-proxy`, `ebs-csi`, `aws-load-balancer-controller`, `karpenter`
-- 내 버전을 모를 때 확인하는 명령:
+- 파일 인코딩은 UTF-8 권장이지만, Windows 메모장의 ANSI 저장도 읽을 수 있습니다.
 
-  ```bash
-  aws eks describe-addon --cluster-name <클러스터> --addon-name vpc-cni --query addon.addonVersion --output text
-  ```
-
-  ```bash
-  kubectl get deploy -A -o jsonpath='{range .items[*]}{.spec.template.spec.containers[*].image}{"\n"}{end}' | grep -E 'karpenter|load-balancer'
-  ```
-
-<details>
-<summary>목표 add-on 버전 지정 / 목록에 없는 컴포넌트 추가</summary>
+목표 add-on 버전 지정 / 목록에 없는 컴포넌트 추가:
 
 ```yaml
 addons:
@@ -107,18 +252,17 @@ addons:
     current: "v1.14.4"
     repo: cert-manager/cert-manager
 ```
-</details>
-
-### 3단계: 실행
-
-```bash
-eks-precheck run env.yaml
-```
-
-`reports/<날짜>-<현재>-to-<목표>.md` 가 생성됩니다. VS Code 등에서 Markdown 미리보기로 열면 가장 보기 좋습니다.
-화면으로 바로 보려면 `-o -`, 빨리 돌리려면 이슈 검색을 빼는 `--no-issues` 를 붙이세요.
 
 환경이 여러 개면 파일을 나눠 두면 됩니다. 예: `eks-precheck run stg.yaml`, `eks-precheck run prd.yaml`
+(`env*.yaml` 은 사내 정보 보호를 위해 `.gitignore` 처리되어 있습니다)
+
+### 자주 쓰는 옵션
+
+| 옵션 | 설명 |
+|---|---|
+| `--no-issues` | GitHub 이슈 검색 생략 (더 빠름) |
+| `-o 파일.md` | 리포트 저장 경로 지정 |
+| `--no-cache` | 캐시(6시간) 무시하고 새로 수집 |
 
 ---
 
@@ -143,26 +287,32 @@ eks-precheck run env.yaml
 
 ## 문제 해결
 
-| 증상 | 해결 |
-|---|---|
-| `eks-precheck: command not found` | `source .venv/bin/activate` 를 했는지 확인 |
-| `버전 ... 을 따옴표로 감싸 주세요` | `env.yaml` 의 버전을 `"1.30"` 처럼 따옴표로 |
-| `rate limit 초과` | `export GITHUB_TOKEN=$(gh auth token)` 후 재실행 (결과는 6시간 캐시됨) |
-| `알 수 없는 컴포넌트` | 해당 add-on 아래에 `repo: owner/name` 추가 |
+| 증상 | Windows | Linux / macOS |
+|---|---|---|
+| `eks-precheck` 명령을 찾을 수 없음 | `.\.venv\Scripts\Activate.ps1` 실행 여부 확인 | `source .venv/bin/activate` 실행 여부 확인 |
+| `python`/`py`/`git` 명령을 찾을 수 없음 | 설치 후 PowerShell 을 새로 열기 | 패키지 설치 확인 |
+| `rate limit 초과` | `$env:GITHUB_TOKEN = gh auth token` 후 재실행 | `export GITHUB_TOKEN=$(gh auth token)` 후 재실행 |
+| 회사 프록시/SSL 오류 (`SSLError`, `CERTIFICATE_VERIFY_FAILED`) | `$env:HTTPS_PROXY = "http://프록시:포트"`, 사내 CA 는 `$env:REQUESTS_CA_BUNDLE = "C:\경로\ca.pem"` | `export HTTPS_PROXY=...`, `export REQUESTS_CA_BUNDLE=/경로/ca.pem` |
+| `버전 ... 을 따옴표로 감싸 주세요` | `env.yaml` 의 버전을 `"1.30"` 처럼 따옴표로 | 동일 |
+| `알 수 없는 컴포넌트` | 해당 add-on 아래에 `repo: owner/name` 추가 | 동일 |
+
+결과는 캐시됩니다 (Windows: `%LOCALAPPDATA%\eks-precheck\cache`, Linux/macOS: `~/.cache/eks-precheck`). 이상하면 `--no-cache` 로 다시 실행하세요.
 
 ---
 
 ## (고급) 클러스터 직접 조회
 
-입력 파일 대신 실제 클러스터를 read-only 로 조회해 버전, add-on 호환성, Upgrade Insights 를 자동으로 채울 수도 있습니다.
+입력 파일 대신 실제 클러스터를 read-only 로 조회해 버전, add-on 호환성, Upgrade Insights 를 자동으로 채울 수도 있습니다. AWS CLI 자격증명(profile)이 설정되어 있어야 합니다.
 
-```bash
-pip install -e '.[cluster]'
+```powershell
+pip install -e ".[cluster]"
 ```
 
-```bash
+```powershell
 eks-precheck cluster --cluster my-cluster --region ap-northeast-2 --profile readonly --to 1.33
 ```
+
+(Linux/macOS 도 명령은 동일합니다.)
 
 필요 IAM 권한 (읽기 전용): `eks:DescribeCluster`, `eks:ListAddons`, `eks:DescribeAddon`, `eks:DescribeAddonVersions`,
 `eks:ListNodegroups`, `eks:DescribeNodegroup`, `eks:ListInsights`, `eks:DescribeInsight`.
@@ -171,7 +321,7 @@ eks-precheck cluster --cluster my-cluster --region ap-northeast-2 --profile read
 ## 개발
 
 ```bash
-pip install -e '.[dev,cluster]'
+pip install -e ".[dev,cluster]"
 ```
 
 ```bash

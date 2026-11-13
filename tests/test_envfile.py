@@ -77,3 +77,14 @@ nodegroups:
     assert "노드그룹 점검 (입력값 기준)" in md and "`legacy`" in md and "skew" in md
     assert "aws eks describe-addon-versions --addon-name vpc-cni --kubernetes-version 1.31" in md
     assert "coredns" not in md.split("## 2.")[0]  # 입력 안 한 add-on 은 분석하지 않음
+
+
+@pytest.mark.parametrize("encode", [
+    lambda t: t.encode("cp949"),                 # Windows 메모장 ANSI 저장
+    lambda t: b"\xef\xbb\xbf" + t.encode("utf-8"),  # UTF-8 BOM
+])
+def test_windows_saved_files(tmp_path, encode):
+    p = tmp_path / "env.yaml"
+    p.write_bytes(encode('# 한글 주석\ncluster:\n  current: "1.31"\n  target: "1.32"\n'))
+    env = envfile.load(p, KNOWN)
+    assert (env.current, env.target) == ("1.31", "1.32")

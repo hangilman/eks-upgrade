@@ -124,11 +124,11 @@ def _component_section(c: ComponentReport, limit: int, target_minor: str) -> lis
         out.append("")
     elif c.eks_addon:
         out += [
-            f"- 목표 EKS 버전과의 호환 add-on 버전 확인 (AWS CLI):",
+            "- 목표 EKS 버전과의 호환 add-on 버전 확인 (AWS CLI, Windows/Linux 공통):",
             "",
-            "  ```bash",
-            f"  aws eks describe-addon-versions --addon-name {c.eks_addon} --kubernetes-version {target_minor} \\",
-            "    --query 'addons[].addonVersions[].[addonVersion, compatibilities[0].defaultVersion]' --output table",
+            "  ```",
+            f"  aws eks describe-addon-versions --addon-name {c.eks_addon} --kubernetes-version {target_minor} "
+            '--query "addons[].addonVersions[].[addonVersion, compatibilities[0].defaultVersion]" --output table',
             "  ```",
             "",
         ]
