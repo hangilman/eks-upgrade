@@ -13,6 +13,8 @@ EKS 업그레이드 전 사전 조사(Release note, CHANGELOG, 이슈 확인)를
 - `src/eks_precheck/cli.py`: argparse 진입점 (`init` / `run` / `cluster` 서브커맨드)
 - `envfile.py`: 입력 파일(env.yaml)/웹 입력(dict) 검증 (`from_dict`), 템플릿은 `data/env-template.yaml`
 - `server.py`: 웹 UI 서버 (stdlib `http.server`, 127.0.0.1 전용, Host/Origin 검사), 화면은 `data/ui.html` (외부 CDN 없이 단일 파일)
+  - 화면은 해시 라우팅 탭: `#/input` (입력), `#/report/<파일>/<항목>` (리포트를 h2/h3 기준 항목 화면으로 분할, 왼쪽 메뉴), `#/history` (지난 리포트)
+  - 리포트 항목 분할은 브라우저에서 리포트 HTML 의 h2/h3 로 한다. 리포트 Markdown 제목 구조(`## 요약`, `## N. ...변경사항`, `## N. Add-on / 컴포넌트`, `### ...`)를 바꾸면 `buildPages()` 도 함께 확인한다.
 - `md_render.py`: 리포트 Markdown → HTML (모든 HTML escape, http(s) 링크만 허용)
 - `precheck.py`: 수집 → 분석 → `models.Report` 생성 (오케스트레이션)
 - `sources/`: 외부 원문 수집/파싱 (`k8s.py` CHANGELOG·Deprecation Guide, `eks_docs.py` EKS User Guide adoc, `eks_versions.py` EKS 지원 버전, `ami.py` 권장 AMI(SSM 공개 파라미터), `awscli.py` AWS CLI 호출, `github.py` Release/Issue)

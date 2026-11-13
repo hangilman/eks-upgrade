@@ -144,3 +144,10 @@ def test_init_has_titles_and_ami_types(ui):
     init = s.get(base + "/api/init").json()
     assert "AL2023_x86_64_STANDARD" in init["ami_types"]
     assert init["components"]["karpenter"]["eks_addon"] is None
+
+
+def test_page_has_tabs(ui):
+    base, s, _ = ui
+    html = s.get(base + "/").text
+    for anchor in ('href="#/input"', 'href="#/report"', 'href="#/history"', 'id="toc"', "function buildPages"):
+        assert anchor in html
