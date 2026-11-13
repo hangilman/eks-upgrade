@@ -37,6 +37,14 @@ def adoc_to_md(text: str) -> str:
     return text
 
 
+RELEASE_CALENDAR = "https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html#kubernetes-release-calendar"
+
+
+def available_minors(doc: str) -> list[tuple[int, int]]:
+    """문서에 섹션이 있는 Kubernetes 버전 목록 (예: [(1, 36), (1, 35)])."""
+    return [(int(a), int(b)) for a, b in re.findall(r"^== Kubernetes (\d+)\.(\d+)\s*$", doc, flags=re.M)]
+
+
 def find_section(doc: str, minor: str) -> str | None:
     return section(doc, rf"^== Kubernetes {re.escape(minor)}\s*$", r"^== [^=]")
 

@@ -48,6 +48,10 @@ class VersionReport:
     deprecations: list[str] = field(default_factory=list)
     api_changes: list[str] = field(default_factory=list)
     links: dict[str, str] = field(default_factory=dict)
+    # EKS 지원 상태: standard / extended / not_yet(EKS 미출시) / ended(지원 종료) / unknown(문서 수집 실패)
+    eks_status: str = "unknown"
+    eks_status_note: str = ""
+    upstream_released: bool = True  # 업스트림에 vX.Y.0 이 있는지
 
 
 @dataclass

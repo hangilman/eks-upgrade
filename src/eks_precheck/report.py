@@ -23,7 +23,7 @@ def _count(report: Report) -> dict[str, int]:
     for f in report.env_findings:
         c[f.severity] = c.get(f.severity, 0) + 1
     for v in report.versions:
-        c[CRITICAL] += len(v.removed_apis) + len(v.eks_important) + len(v.urgent_notes)
+        c[CRITICAL] += len(v.removed_apis) + len(v.eks_important) + len(v.urgent_notes) + (v.eks_status == "not_yet")
         c[REVIEW] += len(v.eks_subsections) + len(v.deprecations) + len(v.api_changes)
     for comp in report.components:
         for f in comp.findings:
@@ -79,9 +79,16 @@ def _cluster_section(report: Report) -> list[str]:
 
 
 def _version_section(v: VersionReport, limit: int) -> list[str]:
-    out = [f"### Kubernetes {v.minor}", ""]
+    status = {"standard": "EKS standard support", "extended": "EKS extended support (추가 비용)",
+              "not_yet": "🔴 EKS 미지원 (아직 출시 전)", "ended": "EKS 지원 종료", "unknown": "확인 필요"}[v.eks_status]
+    out = [f"### Kubernetes {v.minor} — {status}", ""]
     out.append("링크: " + " · ".join(f"[{k}]({u})" for k, u in v.links.items()))
     out.append("")
+    if v.eks_status_note:
+        icon = "🔴" if v.eks_status == "not_yet" else "ℹ️"
+        out += [f"> {icon} {v.eks_status_note}", ""]
+    if not v.upstream_released:
+        out += [f"> ℹ️ 업스트림 Kubernetes 에도 아직 v{v.minor}.0 정식 릴리스가 없어 변경사항을 수집하지 못했습니다.", ""]
     if v.removed_apis:
         out += ["#### 🔴 제거되는 API (더 이상 serve 되지 않음)", ""]
         for r in v.removed_apis:
@@ -209,6 +216,20 @@ def _nodegroup_input_section(report: Report, n: int) -> list[str]:
     return out + [""]
 
 
+def _blockers(report: Report) -> list[str]:
+    """업그레이드 자체가 불가능한 조건은 리포트 맨 위에 표시."""
+    not_yet = [v.minor for v in report.versions if v.eks_status == "not_yet"]
+    if not not_yet:
+        return []
+    supported = [v.minor for v in report.versions if v.eks_status in ("standard", "extended")]
+    tail = f" 현재 EKS 에서 가능한 최대 목표 버전은 **{supported[-1]}** 입니다." if supported else ""
+    return [
+        f"> 🔴 **업그레이드 불가**: Kubernetes {', '.join(not_yet)} 는 아직 Amazon EKS 에서 지원되지 않습니다.{tail} "
+        "아래 내용은 EKS 지원 이후를 대비한 업스트림 기준 참고 정보입니다.",
+        "",
+    ]
+
+
 def render(report: Report, limit: int = 20) -> str:
     c = _count(report)
     path = " → ".join([report.from_minor, *report.path])
@@ -223,6 +244,7 @@ def render(report: Report, limit: int = 20) -> str:
         f"- 업그레이드 경로: {path} (컨트롤 플레인은 한 번에 1 마이너씩만 업그레이드 가능)",
         target_line,
         "",
+        *_blockers(report),
         "> 이 리포트는 공개 문서/Release note 를 규칙 기반으로 자동 추출한 결과입니다. "
         "누락이나 오분류가 있을 수 있으므로 최종 판단 전 원문 링크를 확인하세요.",
         "",

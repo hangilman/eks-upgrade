@@ -56,7 +56,7 @@ def test_offline_run_end_to_end(fixture_text, fake_http):
     assert v.urgent_notes and v.deprecations
     # 수집 실패/섹션 없음은 경고로 기록되고 실행은 계속됨
     assert any("EKS 문서(standard)" in w for w in report.warnings)
-    assert any("Kubernetes 1.31 섹션을 찾지 못했습니다" in w for w in report.warnings)
+    assert any("Kubernetes 1.31: EKS 문서 일부를 수집하지 못해" in w for w in report.warnings)
 
     vpc = report.components[0]
     assert vpc.target == "v1.20.0" and vpc.target_source == "최신 릴리스"
@@ -112,3 +112,36 @@ def test_images_to_versions():
              "aws-load-balancer-controller": {"image_match": "aws-load-balancer-controller:"},
              "foo": {"image_match": "foo:"}}
     assert images_to_versions(obj, comps) == {"karpenter": "1.0.6", "aws-load-balancer-controller": "v2.8.1"}
+
+
+def _eks_status_routes(fixture_text):
+    routes = _routes(fixture_text)
+    routes[eks_docs.DOCS["standard"][0]] = "== Kubernetes 1.36\n\n* note 1.36\n\n== Kubernetes 1.35\n\n* note 1.35\n"
+    routes[k8s.CHANGELOG_RAW.format(minor="1.37")] = "# v1.37.2\n\n- patch\n\n# v1.37.0\n\n## Changelog since v1.36.0\n"
+    routes[k8s.CHANGELOG_RAW.format(minor="1.38")] = "# v1.38.0-alpha.1\n\n- alpha\n"
+    return routes
+
+
+def test_target_not_yet_supported_by_eks(fixture_text, fake_http):
+    report = precheck.run(fake_http(_eks_status_routes(fixture_text)), {}, "1.35", "1.38")
+    status = {v.minor: v.eks_status for v in report.versions}
+    assert status == {"1.36": "standard", "1.37": "not_yet", "1.38": "not_yet"}
+    assert "최신 버전: 1.36" in report.versions[1].eks_status_note
+    assert not report.versions[2].upstream_released
+    assert not any("지원 종료" in w for w in report.warnings)
+
+    md = render(report)
+    assert "🔴 **업그레이드 불가**: Kubernetes 1.37, 1.38" in md
+    assert "가능한 최대 목표 버전은 **1.36**" in md
+    assert "### Kubernetes 1.37 — 🔴 EKS 미지원 (아직 출시 전)" in md
+
+
+def test_ended_and_unknown_status(fixture_text, fake_http):
+    routes = _eks_status_routes(fixture_text)
+    report = precheck.run(fake_http(routes), {}, "1.29", "1.30")
+    assert report.versions[0].eks_status == "ended"  # 1.30 < 문서 최저 버전(1.31)
+
+    del routes[eks_docs.DOCS["standard"][0]]  # 문서 일부 수집 실패 → 판단 보류
+    report = precheck.run(fake_http(routes), {}, "1.36", "1.37")
+    assert report.versions[0].eks_status == "unknown"
+    assert any("판단할 수 없습니다" in w for w in report.warnings)
