@@ -12,7 +12,7 @@ EKS 업그레이드 전 사전 조사(Release note, CHANGELOG, 이슈 확인)를
 - `src/eks_precheck/cli.py`: argparse 진입점 (`init` / `run` / `cluster` 서브커맨드)
 - `envfile.py`: 입력 파일(env.yaml) 로드/검증, 템플릿은 `data/env-template.yaml`
 - `precheck.py`: 수집 → 분석 → `models.Report` 생성 (오케스트레이션)
-- `sources/`: 외부 원문 수집/파싱 (`k8s.py` CHANGELOG·Deprecation Guide, `eks_docs.py` EKS User Guide adoc, `github.py` Release/Issue)
+- `sources/`: 외부 원문 수집/파싱 (`k8s.py` CHANGELOG·Deprecation Guide, `eks_docs.py` EKS User Guide adoc, `eks_versions.py` EKS 지원 버전, `github.py` Release/Issue)
 - `classify.py`: Release note 항목의 규칙 기반 분류 (critical / security / review / info)
 - `cluster.py`: `--cluster` 모드, boto3 read-only 조회
 - `report.py`: Markdown 렌더링 (한국어)
@@ -20,6 +20,7 @@ EKS 업그레이드 전 사전 조사(Release note, CHANGELOG, 이슈 확인)를
 
 ## 원칙
 - 버전별 사실(제거 API, EKS 공지 등)은 코드에 하드코딩하지 않고 **원문에서 매번 추출**한다. 예외는 `precheck.py` 의 상수(kubelet skew, AL2 마지막 버전)뿐이며 출처를 주석으로 남긴다.
+- EKS 지원 여부(미지원/지원 종료)는 **공식 출처(AWS API `describe-cluster-versions`, AWS 문서 사이트)로만 단정**한다. GitHub 문서 원본(awsdocs)은 갱신이 수개월 늦을 수 있으므로 릴리스 노트 본문 추출에만 쓰고, 원본에 없다는 이유로 "미지원"이라 판단하지 않는다.
 - 클러스터 조회는 **read-only API 만** 사용한다. 쓰기 API 를 추가하지 않는다.
 - 외부 수집 실패는 예외로 중단하지 않고 `report.warnings` 에 기록한 뒤 계속 진행한다.
 - 리포트 문구는 한국어, 기술 용어/명령어는 영어 원문 유지.

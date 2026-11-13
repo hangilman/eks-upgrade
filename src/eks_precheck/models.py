@@ -48,9 +48,12 @@ class VersionReport:
     deprecations: list[str] = field(default_factory=list)
     api_changes: list[str] = field(default_factory=list)
     links: dict[str, str] = field(default_factory=dict)
-    # EKS 지원 상태: standard / extended / not_yet(EKS 미출시) / ended(지원 종료) / unknown(문서 수집 실패)
+    # EKS 지원 상태: standard / extended / not_yet(EKS 미출시) / ended(지원 종료)
+    #               / unverified(공식 출처 확인 불가) / unknown
     eks_status: str = "unknown"
+    eks_status_source: str = ""  # 상태를 판단한 출처
     eks_status_note: str = ""
+    eks_notes_missing: bool = False  # GitHub 문서 원본에 해당 버전 릴리스 노트가 없음
     upstream_released: bool = True  # 업스트림에 vX.Y.0 이 있는지
 
 

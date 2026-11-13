@@ -25,6 +25,12 @@ addons:
   #   current: "v1.14.4"
   #   repo: cert-manager/cert-manager
 
+# (선택) AWS CLI 설정. AWS CLI 가 로그인되어 있으면 `aws eks describe-cluster-versions`(읽기 전용)로
+# EKS 가 실제 지원하는 버전을 확인합니다. 기본 profile/region 을 쓰면 생략 가능.
+# aws:
+#   profile: default
+#   region: ap-northeast-2
+
 # (선택) 노드그룹 정보. 적으면 AMI 타입(AL2 지원 종료)과 kubelet 버전 차이(skew)를 점검합니다.
 # 확인:  aws eks describe-nodegroup --cluster-name <이름> --nodegroup-name <ng> --query "nodegroup.[version,amiType]"
 nodegroups:

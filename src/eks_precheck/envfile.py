@@ -25,6 +25,8 @@ class EnvInput:
     current_versions: dict[str, str] = field(default_factory=dict)
     target_versions: dict[str, str] = field(default_factory=dict)
     nodegroups: list[NodeGroup] = field(default_factory=list)
+    aws_profile: str | None = None
+    aws_region: str | None = None
 
 
 def template_text() -> str:
@@ -84,6 +86,12 @@ def load(path: str | Path, known: dict[str, dict]) -> EnvInput:
         env.current_versions[name] = _version(current, f"{where}.current" if isinstance(value, dict) else where)
         if target is not None:
             env.target_versions[name] = _version(target, f"{where}.target")
+
+    aws = data.get("aws") or {}
+    if not isinstance(aws, dict):
+        raise InputError("aws: profile / region 형식으로 적어 주세요.")
+    env.aws_profile = str(aws["profile"]) if aws.get("profile") else None
+    env.aws_region = str(aws["region"]) if aws.get("region") else None
 
     for i, ng in enumerate(data.get("nodegroups") or []):
         where = f"nodegroups[{i}]"

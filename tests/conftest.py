@@ -32,3 +32,11 @@ class FakeHttp:
 @pytest.fixture
 def fake_http():
     return FakeHttp
+
+
+@pytest.fixture(autouse=True)
+def no_real_aws_cli(monkeypatch):
+    """테스트에서 실제 AWS CLI 가 호출되지 않도록 기본 차단. 필요한 테스트에서 다시 monkeypatch 한다."""
+    from eks_precheck.sources import eks_versions
+
+    monkeypatch.setattr(eks_versions, "from_aws_cli", lambda *a, **k: (None, "테스트: AWS CLI 비활성"))

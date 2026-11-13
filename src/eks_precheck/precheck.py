@@ -9,7 +9,8 @@ from . import versions
 from .classify import classify_release
 from .http import FetchError, HttpClient, RateLimited
 from .models import CRITICAL, INFO, REVIEW, ClusterState, ComponentReport, Finding, NodeGroup, Report, VersionReport
-from .sources import eks_docs, k8s
+from .sources import eks_docs, eks_versions, k8s
+from .sources.eks_versions import SupportInfo
 from .sources.github import DEFAULT_TAG_PATTERN, GitHub, latest_version, select_releases
 
 Log = Callable[[str], None]
@@ -18,7 +19,10 @@ KUBELET_MAX_SKEW = 3  # Kubernetes 1.28+ : kubelet 은 kube-apiserver 보다 최
 AL2_LAST_MINOR = (1, 32)  # EKS 문서: 1.32 가 AL2 AMI 를 제공하는 마지막 버전
 
 
-def build_version_reports(http: HttpClient, path: list[str], warnings: list[str], log: Log) -> list[VersionReport]:
+def build_version_reports(
+    http: HttpClient, path: list[str], warnings: list[str], log: Log, support: SupportInfo | None = None
+) -> list[VersionReport]:
+    support = support or SupportInfo()
     try:
         guide = http.get(k8s.DEPRECATION_GUIDE_RAW)
     except FetchError as e:
@@ -32,6 +36,7 @@ def build_version_reports(http: HttpClient, path: list[str], warnings: list[str]
         except FetchError as e:
             warnings.append(f"EKS 문서({kind}) 수집 실패: {e}")
 
+    mirror_date = eks_versions.mirror_last_updated(http) if eks_texts else None
     reports = []
     for minor in path:
         log(f"  - Kubernetes {minor} 변경사항 수집")
@@ -41,21 +46,19 @@ def build_version_reports(http: HttpClient, path: list[str], warnings: list[str]
         if guide:
             vr.removed_apis = k8s.removed_apis(guide, minor)
 
-        found = False
         vr.links["EKS 릴리스 일정"] = eks_docs.RELEASE_CALENDAR
+        vr.links["EKS 릴리스 노트 (AWS 문서)"] = eks_docs.DOCS["standard"][1]
         for kind, text in eks_texts.items():
             sec = eks_docs.find_section(text, minor)
             if sec:
                 notes = eks_docs.parse_section(sec)
                 vr.eks_important, vr.eks_notes, vr.eks_subsections = notes.important, notes.notes, notes.subsections
-                vr.links[f"EKS 릴리스 노트 ({kind} support)"] = (
-                    eks_docs.DOCS[kind][1] + f"#kubernetes-{minor.replace('.', '-')}"
-                )
+                vr.links["EKS 릴리스 노트 (AWS 문서)"] = eks_docs.DOCS[kind][1] + f"#kubernetes-{minor.replace('.', '-')}"
                 vr.eks_status = kind
-                found = True
                 break
-        if not found:
-            _judge_missing_eks_section(vr, eks_texts, warnings)
+        else:
+            vr.eks_notes_missing = bool(eks_texts)
+        _judge_eks_status(vr, support, eks_texts, mirror_date, warnings)
 
         try:
             changelog = http.get(k8s.CHANGELOG_RAW.format(minor=minor))
@@ -73,35 +76,58 @@ def build_version_reports(http: HttpClient, path: list[str], warnings: list[str]
     return reports
 
 
-def _judge_missing_eks_section(vr: VersionReport, eks_texts: dict[str, str], warnings: list[str]) -> None:
-    """EKS 문서에 해당 버전 섹션이 없을 때, 아직 미출시인지 지원 종료인지 판단."""
+_STATUS_MAP = {eks_versions.STANDARD: "standard", eks_versions.EXTENDED: "extended", eks_versions.UNSUPPORTED: "ended"}
+
+
+def _judge_eks_status(
+    vr: VersionReport, support: SupportInfo, eks_texts: dict[str, str], mirror_date: str | None, warnings: list[str]
+) -> None:
+    """EKS 지원 상태 판단. 공식 출처(AWS API / AWS 문서 사이트)가 있을 때만 '미지원'으로 단정한다."""
     minor = versions.parse_minor(vr.minor)
-    if len(eks_texts) < len(eks_docs.DOCS):  # 문서 일부를 못 받았으면 판단 불가
-        vr.eks_status_note = "EKS 문서 일부를 수집하지 못해 지원 여부를 판단할 수 없습니다. 수동 확인이 필요합니다."
-        warnings.append(f"Kubernetes {vr.minor}: {vr.eks_status_note}")
+    mirror_note = f"GitHub 문서 원본(마지막 갱신 {mirror_date})" if mirror_date else "GitHub 문서 원본"
+
+    if support.source:
+        vr.eks_status_source = support.source
+        known = [versions.parse_minor(m) for m in support.versions]
+        if vr.minor in support.versions:
+            vr.eks_status = _STATUS_MAP[support.versions[vr.minor]]
+            d = support.details.get(vr.minor, {})
+            parts = [f"{label} {d[k]}" for k, label in (
+                ("releaseDate", "EKS 출시"), ("endOfStandardSupportDate", "standard 지원 종료"),
+                ("endOfExtendedSupportDate", "extended 지원 종료")) if k in d]
+            if parts:
+                vr.eks_status_note = " · ".join(parts)
+        elif minor > max(known):
+            vr.eks_status = "not_yet"
+            vr.eks_status_note = (
+                f"{support.source} 기준 Amazon EKS 는 아직 Kubernetes {vr.minor} 를 지원하지 않습니다 "
+                f"(지원 최신 버전: {versions.minor_str(max(known))})."
+            )
+        else:
+            vr.eks_status = "ended"
+            vr.eks_status_note = f"{support.source} 기준 EKS 지원이 종료된 버전입니다."
+        if vr.eks_notes_missing and vr.eks_status in ("standard", "extended"):
+            vr.eks_status_note = (vr.eks_status_note + " / " if vr.eks_status_note else "") + (
+                f"EKS 전용 변경사항은 {mirror_note}에 아직 없어 자동 추출하지 못했습니다. 위 'EKS 릴리스 노트' 링크에서 직접 확인하세요."
+            )
         return
-    known = [m for text in eks_texts.values() for m in eks_docs.available_minors(text)]
-    if not known:
-        vr.eks_status_note = "EKS 문서 형식이 바뀌어 지원 버전을 읽지 못했습니다. 수동 확인이 필요합니다."
-        warnings.append(f"Kubernetes {vr.minor}: {vr.eks_status_note}")
+
+    # 공식 출처 확인 실패 → GitHub 문서 원본만으로는 '미지원'을 단정하지 않는다
+    if vr.eks_status in ("standard", "extended"):
+        vr.eks_status_source = mirror_note
         return
-    newest, oldest = max(known), min(known)
-    if minor > newest:
-        vr.eks_status = "not_yet"
-        vr.eks_status_note = (
-            f"Amazon EKS 는 아직 Kubernetes {vr.minor} 를 지원하지 않습니다 (EKS 문서 기준 최신 버전: "
-            f"{versions.minor_str(newest)}). EKS 는 업스트림 출시 이후 시차를 두고 새 버전을 제공하므로, "
-            "지원 전에는 이 버전으로 업그레이드할 수 없습니다."
-        )
-    elif minor < oldest:
-        vr.eks_status = "ended"
-        vr.eks_status_note = (
-            f"Kubernetes {vr.minor} 는 EKS 지원(extended 포함)이 종료되어 문서에서 빠졌습니다 "
-            f"(현재 지원 범위: {versions.minor_str(oldest)}~{versions.minor_str(newest)})."
-        )
-    else:
-        vr.eks_status_note = "EKS 지원 범위 안의 버전이지만 문서에서 섹션을 찾지 못했습니다. 수동 확인이 필요합니다."
-        warnings.append(f"Kubernetes {vr.minor}: {vr.eks_status_note}")
+    mirror_known = [m for text in eks_texts.values() for m in eks_docs.available_minors(text)]
+    if mirror_known and minor < min(mirror_known):
+        vr.eks_status, vr.eks_status_source = "ended", mirror_note
+        vr.eks_status_note = "EKS 문서에서 빠진 버전으로, EKS 지원이 종료된 것으로 보입니다."
+        return
+    vr.eks_status = "unverified"
+    vr.eks_status_source = mirror_note
+    vr.eks_status_note = (
+        f"{mirror_note}에 Kubernetes {vr.minor} 내용이 없습니다. 문서 원본 갱신이 늦은 것일 수 있으므로 "
+        "EKS 지원 여부는 AWS 콘솔 또는 `aws eks describe-cluster-versions` 로 확인하세요."
+    )
+    warnings.append(f"Kubernetes {vr.minor}: EKS 지원 여부를 공식 출처로 확인하지 못했습니다 ({'; '.join(support.errors) or '확인 불가'}).")
 
 
 def _resolve_versions(
@@ -269,6 +295,9 @@ def run(
     lookback: int = 5,
     nodegroups: list[NodeGroup] | None = None,
     source: str = "",
+    use_aws: bool = True,
+    aws_profile: str | None = None,
+    aws_region: str | None = None,
     log: Log = lambda _m: None,
 ) -> Report:
     if cluster:
@@ -295,7 +324,8 @@ def run(
     elif report.nodegroups:
         report.env_findings = sorted(nodegroup_findings(report.nodegroups, to_minor), key=lambda f: f.severity != CRITICAL)
     log("[1/2] Kubernetes / EKS 변경사항")
-    report.versions = build_version_reports(http, path, report.warnings, log)
+    support = eks_versions.resolve(http, use_aws, aws_profile, aws_region, log)
+    report.versions = build_version_reports(http, path, report.warnings, log, support)
     log("[2/2] 컴포넌트 릴리스 / 이슈")
     report.components = build_component_reports(
         http, components, to_minor, cluster, cli_current or {}, cli_target or {},

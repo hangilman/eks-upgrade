@@ -31,6 +31,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-cache", action="store_true", help="캐시(6시간) 사용 안 함")
     p.add_argument("--max-items", type=int, default=20, help="섹션당 표시할 최대 항목 수 (기본 20)")
     p.add_argument("--config", help="컴포넌트 정의 파일 (기본: 내장 components.yaml)")
+    p.add_argument("--no-aws", action="store_true",
+                   help="AWS CLI 로 EKS 지원 버전을 확인하지 않음 (AWS 문서 사이트로만 확인)")
     p.add_argument("-q", "--quiet", action="store_true", help="진행 로그 출력 안 함")
 
 
@@ -113,6 +115,9 @@ def _run(args, log) -> int:
         search_issues=not args.no_issues,
         nodegroups=env.nodegroups,
         source=str(args.input),
+        use_aws=not args.no_aws,
+        aws_profile=env.aws_profile,
+        aws_region=env.aws_region,
         log=log,
     )
     _write(report, args, f"-{Path(args.input).stem}" if Path(args.input).stem != "env" else "", log)
@@ -133,7 +138,8 @@ def _cluster(args, log) -> int:
         state, warnings = collect(args.cluster, args.region, args.profile, to_minor, components, args.kube_context)
         report = precheck.run(
             _http(args, log), components, None, to_minor,
-            cluster=state, cluster_warnings=warnings, search_issues=not args.no_issues, log=log,
+            cluster=state, cluster_warnings=warnings, search_issues=not args.no_issues,
+            use_aws=not args.no_aws, aws_profile=args.profile, aws_region=state.region, log=log,
         )
     except (ClusterError, ValueError) as e:
         print(f"오류: {e}", file=sys.stderr)

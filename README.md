@@ -232,6 +232,7 @@ nodegroups:            # (선택) AMI 타입 / 버전 차이 점검
 - 들여쓰기는 **스페이스 2칸** (Tab 문자 사용 불가)
 - 기본 지원 add-on: `vpc-cni`, `coredns`, `kube-proxy`, `ebs-csi`, `aws-load-balancer-controller`, `karpenter`
 - 파일 인코딩은 UTF-8 권장이지만, Windows 메모장의 ANSI 저장도 읽을 수 있습니다.
+- (선택) `aws:` 에 profile / region 을 적으면 해당 AWS CLI 설정으로 EKS 지원 버전을 확인합니다. 생략하면 기본 설정을 씁니다.
 
 목표 add-on 버전 지정 / 목록에 없는 컴포넌트 추가:
 
@@ -263,6 +264,7 @@ addons:
 | 섹션 | 내용 |
 |---|---|
 | 요약 · 컴포넌트별 영향도 | 🔴 필수 조치 / 🟡 검토 / 🔒 보안 / 🐛 이슈 건수, add-on 별 `현재 → 목표` |
+| EKS 지원 상태 | 경로상 각 버전이 EKS 에서 standard / extended / 미지원 / 지원 종료인지. 목표 버전이 미지원이면 맨 위에 🔴 표시 |
 | 노드그룹 점검 | AL2 AMI 지원 종료(1.33+), kubelet 버전 차이(skew) |
 | Kubernetes / EKS 변경사항 | 경로상 각 버전(예: 1.32, 1.33)의 제거 API, EKS 중요 공지, Urgent Upgrade Notes, Deprecation |
 | Add-on | 현재~목표 사이 릴리스의 Breaking / 보안 / Deprecation 항목, 관련 오픈 이슈, 호환 버전 확인 명령 |
@@ -272,10 +274,20 @@ addons:
 [EKS User Guide](https://github.com/awsdocs/amazon-eks-user-guide), `kubernetes/kubernetes` CHANGELOG, 각 add-on GitHub Release/Issue.
 버전별 내용은 실행할 때마다 원문에서 가져오므로 새 버전이 나와도 도구를 고칠 필요가 없습니다.
 
+### EKS 지원 버전은 어떻게 확인하나
+
+EKS 는 업스트림 Kubernetes 보다 늦게 새 버전을 출시하므로, 목표 버전이 EKS 에서 지원되는지 아래 순서로 확인합니다.
+
+1. **AWS API** — `aws eks describe-cluster-versions` (AWS CLI 가 설치·로그인되어 있을 때, 읽기 전용). 가장 정확합니다.
+2. **AWS 문서 사이트** — docs.aws.amazon.com 의 EKS 버전 페이지
+3. 둘 다 실패하면 GitHub 문서 원본만 참고하되, **원본은 갱신이 수개월 늦을 수 있어 "미지원"으로 단정하지 않고 🟡 "확인 필요"로 표시**합니다.
+
+AWS CLI 확인이 필요 없으면 `--no-aws` 를 붙이세요. 필요한 IAM 권한은 `eks:DescribeClusterVersions` (읽기 전용) 하나입니다.
+
 ## 한계
 - 분류는 키워드 기반이라 오분류·누락이 있을 수 있습니다. 최종 판단은 리포트의 원문 링크로 하세요.
 - 입력한 값만 분석합니다. 매니페스트 안의 deprecated API 사용 여부는 `pluto` / `kubent` 또는 EKS 콘솔의 Upgrade Insights 로 확인하세요.
-- EKS 문서는 지원 중인 버전만 포함하므로 오래된 버전 구간은 경고로 표시됩니다.
+- EKS 전용 변경사항(릴리스 노트 본문)은 GitHub 문서 원본에서 추출하므로, 최신 EKS 버전은 원본 갱신 전까지 비어 있을 수 있습니다. 이 경우 리포트에 AWS 문서 링크로 직접 확인하라고 표시됩니다.
 
 ## 문제 해결
 

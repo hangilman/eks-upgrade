@@ -24,7 +24,7 @@ def _count(report: Report) -> dict[str, int]:
         c[f.severity] = c.get(f.severity, 0) + 1
     for v in report.versions:
         c[CRITICAL] += len(v.removed_apis) + len(v.eks_important) + len(v.urgent_notes) + (v.eks_status == "not_yet")
-        c[REVIEW] += len(v.eks_subsections) + len(v.deprecations) + len(v.api_changes)
+        c[REVIEW] += len(v.eks_subsections) + len(v.deprecations) + len(v.api_changes) + (v.eks_status == "unverified")
     for comp in report.components:
         for f in comp.findings:
             c[f.severity] = c.get(f.severity, 0) + 1
@@ -80,12 +80,15 @@ def _cluster_section(report: Report) -> list[str]:
 
 def _version_section(v: VersionReport, limit: int) -> list[str]:
     status = {"standard": "EKS standard support", "extended": "EKS extended support (추가 비용)",
-              "not_yet": "🔴 EKS 미지원 (아직 출시 전)", "ended": "EKS 지원 종료", "unknown": "확인 필요"}[v.eks_status]
+              "not_yet": "🔴 EKS 미지원 (아직 출시 전)", "ended": "EKS 지원 종료",
+              "unverified": "🟡 EKS 지원 여부 확인 필요", "unknown": "확인 필요"}[v.eks_status]
     out = [f"### Kubernetes {v.minor} — {status}", ""]
     out.append("링크: " + " · ".join(f"[{k}]({u})" for k, u in v.links.items()))
     out.append("")
+    if v.eks_status_source:
+        out += [f"- EKS 지원 상태 출처: {v.eks_status_source}", ""]
     if v.eks_status_note:
-        icon = "🔴" if v.eks_status == "not_yet" else "ℹ️"
+        icon = {"not_yet": "🔴", "unverified": "🟡"}.get(v.eks_status, "ℹ️")
         out += [f"> {icon} {v.eks_status_note}", ""]
     if not v.upstream_released:
         out += [f"> ℹ️ 업스트림 Kubernetes 에도 아직 v{v.minor}.0 정식 릴리스가 없어 변경사항을 수집하지 못했습니다.", ""]
@@ -224,7 +227,8 @@ def _blockers(report: Report) -> list[str]:
     supported = [v.minor for v in report.versions if v.eks_status in ("standard", "extended")]
     tail = f" 현재 EKS 에서 가능한 최대 목표 버전은 **{supported[-1]}** 입니다." if supported else ""
     return [
-        f"> 🔴 **업그레이드 불가**: Kubernetes {', '.join(not_yet)} 는 아직 Amazon EKS 에서 지원되지 않습니다.{tail} "
+        f"> 🔴 **업그레이드 불가**: Kubernetes {', '.join(not_yet)} 는 아직 Amazon EKS 에서 지원되지 않습니다 "
+        f"({report.versions[-1].eks_status_source} 기준).{tail} "
         "아래 내용은 EKS 지원 이후를 대비한 업스트림 기준 참고 정보입니다.",
         "",
     ]
