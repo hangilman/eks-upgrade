@@ -248,7 +248,7 @@ kubectl get deploy -A -o jsonpath='{..image}' | tr ' ' '\n' | grep -E 'karpenter
 - 화면마다 주소(`#/report/<파일>/<항목>`)가 있어 브라우저 **뒤로 가기**가 동작하고, 특정 항목 화면을 북마크할 수 있습니다.
 
 - **클러스터 버전 목록**: AWS CLI 가 있으면 `aws eks describe-cluster-versions` 결과(standard / extended 표시), 없으면 AWS 문서 사이트 → GitHub 문서 원본 + 업스트림 Kubernetes 출시 버전 순으로 채웁니다. 공식 출처가 아니면 "지원 확인 필요"로 표시됩니다.
-- **add-on 버전 목록**: 버전 칸을 클릭하면 EKS 관리형 add-on 은 `describe-addon-versions`(AWS CLI 필요, EKS 기본 버전 표시), Helm 설치는 GitHub Release 태그를 보여 줍니다. 목록에 없는 값도 직접 입력할 수 있습니다.
+- **add-on 버전 목록**: 버전 칸의 ▾ 를 누르면 (값이 이미 입력되어 있어도 전체 목록 표시, 입력하면 포함된 버전으로 필터) EKS 관리형 add-on 은 `describe-addon-versions`(AWS CLI 필요, EKS 기본 버전 표시), Helm 설치는 GitHub Release 태그를 보여 줍니다. 목록에 없는 값도 직접 입력할 수 있습니다.
 - **노드그룹 AMI**: AMI 타입과 버전을 고르면 리포트에 현재/목표 버전의 **권장 EKS 최적화 AMI ID 와 릴리스 버전(조회 시점 기준)** 이 나옵니다. 사용 중인 AMI ID 를 넣으면 권장 AMI 와 다른지 표시합니다.
 - 마지막 입력값은 브라우저에 저장되어 다음에 열 때 그대로 채워집니다. 처음 열 때는 같은 폴더의 `env.yaml` 이 있으면 그 값을 불러옵니다.
 - 생성한 리포트는 CLI 와 똑같이 `reports/` 폴더에 저장됩니다.
