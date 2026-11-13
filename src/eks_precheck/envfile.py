@@ -50,6 +50,11 @@ def _minor(value, where: str) -> str:
 
 
 def load(path: str | Path, known: dict[str, dict]) -> EnvInput:
+    return from_dict(load_raw(path), known)
+
+
+def load_raw(path: str | Path) -> dict:
+    """입력 파일을 검증 없이 dict 로 읽는다 (웹 UI 의 초기값 채우기용)."""
     try:
         data = yaml.safe_load(read_user_text(path)) or {}
     except FileNotFoundError as e:
@@ -58,7 +63,13 @@ def load(path: str | Path, known: dict[str, dict]) -> EnvInput:
         raise InputError(f"{path}: 파일 인코딩을 읽을 수 없습니다. UTF-8 로 저장해 주세요.") from e
     except yaml.YAMLError as e:
         raise InputError(f"YAML 형식 오류: {e}") from e
+    if not isinstance(data, dict):
+        raise InputError("입력 파일 최상위는 cluster / addons / nodegroups 항목이어야 합니다.")
+    return data
 
+
+def from_dict(data: dict, known: dict[str, dict]) -> EnvInput:
+    """dict(입력 파일 또는 웹 UI 입력)를 검증해 EnvInput 으로 변환."""
     cluster = data.get("cluster") or {}
     env = EnvInput(
         current=_minor(cluster.get("current"), "cluster.current"),
@@ -74,7 +85,7 @@ def load(path: str | Path, known: dict[str, dict]) -> EnvInput:
         spec = dict(known.get(name, {}))
         if isinstance(value, dict):
             current, target = value.get("current"), value.get("target")
-            spec.update({k: v for k, v in value.items() if k not in ("current", "target")})
+            spec.update({k: v for k, v in value.items() if k not in ("current", "target") and v not in (None, "")})
         else:
             current, target = value, None
         if not spec.get("repo") and not spec.get("eks_addon"):
@@ -84,7 +95,7 @@ def load(path: str | Path, known: dict[str, dict]) -> EnvInput:
             )
         env.components[name] = spec
         env.current_versions[name] = _version(current, f"{where}.current" if isinstance(value, dict) else where)
-        if target is not None:
+        if target not in (None, ""):
             env.target_versions[name] = _version(target, f"{where}.target")
 
     aws = data.get("aws") or {}

@@ -18,7 +18,10 @@ from .report import render
 from .sources.github import resolve_token
 
 EPILOG = """\
-처음 사용 순서:
+웹 화면으로 쓰기:
+  eks-precheck ui                   → 브라우저에서 입력 / 리포트 확인
+
+명령줄로 쓰기:
   1) eks-precheck init              → env.yaml 생성
   2) env.yaml 에 현재/목표 버전과 add-on 버전 입력
   3) eks-precheck run env.yaml      → reports/ 아래 리포트 생성
@@ -53,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("run", help="입력 파일 기준 영향도 리포트 생성")
     s.add_argument("input", help="입력 파일 (예: env.yaml)")
     _add_common(s)
+
+    s = sub.add_parser("ui", help="웹 브라우저에서 입력하고 리포트 보기 (로컬 서버)")
+    s.add_argument("--port", type=int, default=8765, help="포트 (기본 8765, 사용 중이면 다음 포트)")
+    s.add_argument("--no-browser", action="store_true", help="브라우저를 자동으로 열지 않음")
+    s.add_argument("--config", help="컴포넌트 정의 파일 (기본: 내장 components.yaml)")
 
     s = sub.add_parser("cluster", help="(고급) 실제 클러스터를 read-only 로 조회해서 리포트 생성")
     s.add_argument("--cluster", required=True, help="EKS 클러스터 이름")
@@ -148,6 +156,16 @@ def _cluster(args, log) -> int:
     return 0
 
 
+def _ui(args, log) -> int:
+    from .server import serve
+
+    try:
+        return serve(args.port, not args.no_browser, args.config, log)
+    except (OSError, ValueError) as e:
+        print(f"오류: {e}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     for stream in (sys.stdout, sys.stderr):
@@ -158,4 +176,4 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     log = (lambda _m: None) if getattr(args, "quiet", False) else (lambda m: print(m, file=sys.stderr))
-    return {"init": _init, "run": _run, "cluster": _cluster}[args.command](args, log)
+    return {"init": _init, "run": _run, "ui": _ui, "cluster": _cluster}[args.command](args, log)

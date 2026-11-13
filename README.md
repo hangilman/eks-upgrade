@@ -7,6 +7,12 @@ Kubernetes CHANGELOG, EKS 릴리스 노트, 각 add-on 의 GitHub Release 를 �
 env.yaml (내 환경)  ──▶  eks-precheck run env.yaml  ──▶  reports/20261113-1.31-to-1.33.md
 ```
 
+**웹 화면(권장)** 또는 **명령줄** 두 가지 방식으로 쓸 수 있습니다.
+
+```
+eks-precheck ui   →  브라우저가 열림  →  버전 입력  →  [리포트 생성]  →  화면에서 바로 확인
+```
+
 Windows / Linux(macOS 포함) 모두 지원합니다. **설치와 실행 명령만 OS 별로 다르고, `env.yaml` 작성법과 리포트는 같습니다.**
 
 | 단계 | Windows | Linux / macOS |
@@ -67,7 +73,15 @@ gh auth login
 
 ### 2. 실행 (Windows)
 
-`eks-upgrade` 폴더에서:
+**웹 화면으로 쓰기 (권장)** — `eks-upgrade` 폴더에서:
+
+```powershell
+.\eks-precheck.cmd ui
+```
+
+브라우저가 자동으로 열립니다(`http://127.0.0.1:8765`). 버전을 입력하고 **리포트 생성**을 누르면 됩니다. 다 쓰면 PowerShell 창에서 `Ctrl+C` 로 종료합니다.
+
+**명령줄로 쓰기** — `env.yaml` 파일을 직접 편집하는 방식:
 
 ```powershell
 .\eks-precheck.cmd init
@@ -161,6 +175,20 @@ gh auth login
 
 ### 2. 실행 (Linux / macOS)
 
+**웹 화면으로 쓰기 (권장)**
+
+```bash
+cd eks-upgrade && source .venv/bin/activate
+```
+
+```bash
+eks-precheck ui
+```
+
+브라우저가 자동으로 열립니다(`http://127.0.0.1:8765`). 원격 서버에서 실행한다면 `--no-browser` 를 붙이고 SSH 포트 포워딩(`ssh -L 8765:127.0.0.1:8765 <서버>`)으로 접속하세요. 종료는 `Ctrl+C`.
+
+**명령줄로 쓰기**
+
 새 터미널을 열 때마다:
 
 ```bash
@@ -207,7 +235,19 @@ kubectl get deploy -A -o jsonpath='{..image}' | tr ' ' '\n' | grep -E 'karpenter
 
 ---
 
-## 3. env.yaml 작성 (공통)
+## 웹 화면 안내 (공통)
+
+| 영역 | 내용 |
+|---|---|
+| 왼쪽 입력 | 현재/목표 버전, add-on(목록에서 선택 + 버전), 노드그룹, 옵션(이슈 검색, AWS CLI 확인, AWS profile/region) |
+| 오른쪽 결과 | 진행 로그 → 리포트 표시, **Markdown 다운로드**, **인쇄 / PDF**, 이전 리포트 다시 보기 |
+
+- 마지막 입력값은 브라우저에 저장되어 다음에 열 때 그대로 채워집니다. 처음 열 때는 같은 폴더의 `env.yaml` 이 있으면 그 값을 불러옵니다.
+- 생성한 리포트는 CLI 와 똑같이 `reports/` 폴더에 저장됩니다.
+- 서버는 **이 PC(127.0.0.1)에서만 접속**됩니다. 다른 사람이 같은 네트워크에서 접근할 수 없습니다.
+- 8765 포트가 사용 중이면 자동으로 다음 포트(8766…)를 씁니다. 직접 지정: `--port 9000`
+
+## 3. env.yaml 작성 (명령줄 방식)
 
 `eks-precheck init` 으로 만든 `env.yaml` 에 **현재/목표 버전과 사용 중인 add-on 버전**을 적습니다. **적은 것만 분석합니다.**
 

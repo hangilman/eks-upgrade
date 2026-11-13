@@ -24,7 +24,7 @@ eks-precheck = "eks_precheck.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-eks_precheck = ["data/*.yaml"]
+eks_precheck = ["data/*.yaml", "data/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
