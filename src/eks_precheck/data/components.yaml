@@ -1,0 +1,36 @@
+# 추적할 컴포넌트 정의.
+# 새 컴포넌트는 여기에 추가하거나, 같은 형식의 파일을 --config 로 지정하세요.
+#
+#   repo:         GitHub Release 를 수집할 레포 (owner/name). 없으면 Release 분석 생략
+#   eks_addon:    EKS managed add-on 이름 (--cluster 모드에서 버전/호환성 조회)
+#   image_match:  self-managed 설치일 때 kubectl 로 이미지 태그를 찾기 위한 문자열
+#   tag_pattern:  버전 태그로 인정할 정규식 (기본: ^v?X.Y.Z$). helm-chart-* 같은 태그 제외용
+#   bug_label:    이슈 검색에 사용할 버그 라벨
+components:
+  vpc-cni:
+    repo: aws/amazon-vpc-cni-k8s
+    eks_addon: vpc-cni
+    image_match: "amazon-k8s-cni:"
+    bug_label: bug
+  coredns:
+    repo: coredns/coredns
+    eks_addon: coredns
+    image_match: "/coredns:"
+    bug_label: bug
+  kube-proxy:
+    # kube-proxy 는 Kubernetes 본체와 함께 릴리스되므로 Release 분석은 Kubernetes CHANGELOG 로 대신함
+    eks_addon: kube-proxy
+    image_match: "/kube-proxy:"
+  ebs-csi:
+    repo: kubernetes-sigs/aws-ebs-csi-driver
+    eks_addon: aws-ebs-csi-driver
+    image_match: "aws-ebs-csi-driver:"
+    bug_label: kind/bug
+  aws-load-balancer-controller:
+    repo: kubernetes-sigs/aws-load-balancer-controller
+    image_match: "aws-load-balancer-controller:"
+    bug_label: kind/bug
+  karpenter:
+    repo: aws/karpenter-provider-aws
+    image_match: "karpenter/controller:"
+    bug_label: bug

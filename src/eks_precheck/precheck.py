@@ -1,0 +1,273 @@
+"""수집 → 분석 → Report 모델 생성."""
+
+from __future__ import annotations
+
+import datetime as dt
+import re
+from collections.abc import Callable
+
+from . import versions
+from .classify import classify_release
+from .http import FetchError, HttpClient, RateLimited
+from .models import CRITICAL, INFO, REVIEW, ClusterState, ComponentReport, Finding, Report, VersionReport
+from .sources import eks_docs, k8s
+from .sources.github import DEFAULT_TAG_PATTERN, GitHub, latest_version, select_releases
+
+Log = Callable[[str], None]
+
+KUBELET_MAX_SKEW = 3  # Kubernetes 1.28+ : kubelet 은 kube-apiserver 보다 최대 3 마이너 낮을 수 있음
+AL2_LAST_MINOR = (1, 32)  # EKS 문서: 1.32 가 AL2 AMI 를 제공하는 마지막 버전
+
+
+def build_version_reports(http: HttpClient, path: list[str], warnings: list[str], log: Log) -> list[VersionReport]:
+    try:
+        guide = http.get(k8s.DEPRECATION_GUIDE_RAW)
+    except FetchError as e:
+        guide = ""
+        warnings.append(f"Kubernetes Deprecation Guide 수집 실패: {e}")
+
+    eks_texts: dict[str, str] = {}
+    for kind, (raw, _web) in eks_docs.DOCS.items():
+        try:
+            eks_texts[kind] = http.get(raw)
+        except FetchError as e:
+            warnings.append(f"EKS 문서({kind}) 수집 실패: {e}")
+
+    reports = []
+    for minor in path:
+        log(f"  - Kubernetes {minor} 변경사항 수집")
+        vr = VersionReport(minor=minor)
+        vr.links["Kubernetes CHANGELOG"] = k8s.CHANGELOG_WEB.format(minor=minor)
+        vr.links["Deprecation Guide"] = k8s.DEPRECATION_GUIDE_WEB
+        if guide:
+            vr.removed_apis = k8s.removed_apis(guide, minor)
+
+        found = False
+        for kind, text in eks_texts.items():
+            sec = eks_docs.find_section(text, minor)
+            if sec:
+                notes = eks_docs.parse_section(sec)
+                vr.eks_important, vr.eks_notes, vr.eks_subsections = notes.important, notes.notes, notes.subsections
+                vr.links[f"EKS 릴리스 노트 ({kind} support)"] = (
+                    eks_docs.DOCS[kind][1] + f"#kubernetes-{minor.replace('.', '-')}"
+                )
+                found = True
+                break
+        if not found and eks_texts:
+            warnings.append(
+                f"EKS 문서에서 Kubernetes {minor} 섹션을 찾지 못했습니다 (지원 종료된 버전일 수 있음). 수동 확인이 필요합니다."
+            )
+
+        try:
+            changelog = http.get(k8s.CHANGELOG_RAW.format(minor=minor))
+            sec = k8s.release_section(changelog, minor)
+            if sec:
+                vr.urgent_notes = k8s.urgent_notes(sec)
+                vr.deprecations = k8s.kind_items(sec, "Deprecation")
+                vr.api_changes = k8s.api_changes(sec)
+            else:
+                warnings.append(f"CHANGELOG-{minor}.md 에서 v{minor}.0 섹션을 찾지 못했습니다.")
+        except FetchError as e:
+            warnings.append(f"Kubernetes {minor} CHANGELOG 수집 실패: {e}")
+        reports.append(vr)
+    return reports
+
+
+def _resolve_versions(
+    name: str, spec: dict, cluster: ClusterState | None, cli_current: dict, cli_target: dict
+) -> tuple[str | None, str, str | None, str]:
+    addon = spec.get("eks_addon")
+    current, current_src = None, ""
+    if name in cli_current:
+        current, current_src = cli_current[name], "CLI 지정"
+    elif cluster and addon and addon in cluster.addons:
+        current, current_src = cluster.addons[addon], "클러스터(EKS add-on)"
+    elif cluster and name in cluster.image_versions:
+        current, current_src = cluster.image_versions[name], "클러스터(이미지 태그)"
+
+    target, target_src = None, ""
+    if name in cli_target:
+        target, target_src = cli_target[name], "CLI 지정"
+    elif cluster and addon and addon in cluster.addon_defaults and current_src == "클러스터(EKS add-on)":
+        target, target_src = cluster.addon_defaults[addon], "목표 EKS 버전의 기본(default) add-on 버전"
+    return current, current_src, target, target_src
+
+
+def build_component_reports(
+    http: HttpClient,
+    components: dict[str, dict],
+    to_minor: str,
+    cluster: ClusterState | None,
+    cli_current: dict[str, str],
+    cli_target: dict[str, str],
+    search_issues: bool,
+    lookback: int,
+    warnings: list[str],
+    log: Log,
+) -> list[ComponentReport]:
+    gh = GitHub(http)
+    issues_enabled = search_issues
+    reports = []
+    for name, spec in components.items():
+        repo = spec.get("repo")
+        cr = ComponentReport(name=name, repo=repo)
+        cr.current, cr.current_source, cr.target, cr.target_source = _resolve_versions(
+            name, spec, cluster, cli_current, cli_target
+        )
+        addon = spec.get("eks_addon")
+        if cluster and addon:
+            cr.compat = cluster.addon_compat.get(addon)
+            if addon not in cluster.addons and name not in cluster.image_versions:
+                cr.notes.append("클러스터에서 설치를 확인하지 못했습니다 (미설치 또는 다른 방식으로 설치).")
+
+        if not repo:
+            cr.notes.append("Kubernetes 본체와 함께 릴리스되는 컴포넌트입니다. Kubernetes 변경사항 섹션을 참고하세요.")
+            reports.append(cr)
+            continue
+
+        log(f"  - {name} ({repo}) 릴리스 수집")
+        tag_pattern = spec.get("tag_pattern", DEFAULT_TAG_PATTERN)
+        try:
+            releases = gh.releases(repo)
+        except FetchError as e:
+            warnings.append(f"{name} 릴리스 수집 실패: {e}")
+            cr.notes.append("릴리스 수집 실패 — 하단 '수집 경고' 참고")
+            reports.append(cr)
+            continue
+
+        if not cr.target:
+            cr.target, cr.target_source = latest_version(releases, tag_pattern), "최신 릴리스"
+        # add-on 버전 'v1.19.0-eksbuild.1' 은 업스트림 태그 'v1.19.0' 기준으로 비교
+        selected = select_releases(releases, cr.current, cr.target, tag_pattern, lookback)
+        if not cr.current:
+            cr.notes.append(
+                f"현재 버전을 알 수 없어 최근 {lookback}개 릴리스만 분석했습니다. "
+                f"`--current {name}=vX.Y.Z` 또는 `--cluster` 로 지정하면 정확해집니다."
+            )
+        for r in selected:
+            cr.release_tags.append((r.tag, r.url))
+            for f in classify_release(r.body, source=r.tag, url=r.url):
+                if f.severity == INFO:
+                    cr.info_count += 1
+                else:
+                    cr.findings.append(f)
+
+        if issues_enabled:
+            try:
+                cr.issues = _search_issues(gh, repo, spec, cr.target, to_minor)
+            except RateLimited as e:
+                warnings.append(f"이슈 검색 중단: {e}")
+                issues_enabled = False
+            except FetchError as e:
+                warnings.append(f"{name} 이슈 검색 실패: {e}")
+        reports.append(cr)
+    return reports
+
+
+def _search_issues(gh: GitHub, repo: str, spec: dict, target: str | None, to_minor: str):
+    queries = []
+    tv = versions.parse(target)
+    if tv:
+        queries.append(f'repo:{repo} is:issue is:open "{versions.fmt(tv)}"')
+    label = spec.get("bug_label")
+    queries.append(
+        f'repo:{repo} is:issue is:open "{to_minor}"' + (f' label:"{label}"' if label else "")
+    )
+    seen, result = set(), []
+    for q in queries:
+        for issue in gh.search_issues(q, limit=5):
+            if issue.number not in seen:
+                seen.add(issue.number)
+                result.append(issue)
+    return result[:8]
+
+
+def cluster_findings(state: ClusterState, to_minor: str, components: dict[str, dict]) -> list[Finding]:
+    out: list[Finding] = []
+    target = versions.parse_minor(to_minor)
+
+    for ng in state.nodegroups:
+        try:
+            ngv = versions.parse_minor(ng.version)
+        except ValueError:
+            continue
+        skew = target[1] - ngv[1]
+        if skew > KUBELET_MAX_SKEW:
+            out.append(Finding(CRITICAL, f"노드그룹 `{ng.name}` ({ng.version})이 목표 버전 {to_minor} 대비 "
+                                         f"{skew} 마이너 낮아 kubelet 버전 차이(skew) 허용 범위({KUBELET_MAX_SKEW})를 넘습니다. "
+                                         "컨트롤 플레인 업그레이드 중간에 노드그룹도 함께 올려야 합니다."))
+        elif skew > 0:
+            out.append(Finding(REVIEW, f"노드그룹 `{ng.name}` ({ng.version}): 컨트롤 플레인 업그레이드 후 {to_minor} 로 업그레이드 필요."))
+        if ng.ami_type.startswith("AL2_") and target > AL2_LAST_MINOR:
+            out.append(Finding(CRITICAL, f"노드그룹 `{ng.name}` 은 AMI 타입 `{ng.ami_type}`(Amazon Linux 2)입니다. "
+                                         f"EKS 는 {versions.minor_str(AL2_LAST_MINOR)} 이후 AL2 AMI 를 제공하지 않으므로 "
+                                         "AL2023 또는 Bottlerocket 으로 전환해야 합니다."))
+
+    for ins in state.insights:
+        if ins.status == "ERROR":
+            out.append(Finding(CRITICAL, f"Upgrade Insight `{ins.name}` (대상 {ins.kubernetes_version}): {ins.reason}"))
+        elif ins.status in ("WARNING", "UNKNOWN"):
+            out.append(Finding(REVIEW, f"Upgrade Insight `{ins.name}` [{ins.status}] (대상 {ins.kubernetes_version}): {ins.reason}"))
+
+    for name, spec in components.items():
+        addon = spec.get("eks_addon")
+        compat = state.addon_compat.get(addon) if addon else None
+        if not compat or addon not in state.addons:
+            continue
+        bad = [m for m, c in compat.per_minor.items() if c.get("current_compatible") is False]
+        if bad:
+            out.append(Finding(CRITICAL, f"Add-on `{addon}` 현재 버전 {state.addons[addon]} 은 "
+                                         f"Kubernetes {', '.join(bad)} 와 호환되지 않습니다. 해당 단계 전에 add-on 을 먼저 올리세요."))
+    return sorted(out, key=lambda f: f.severity != CRITICAL)
+
+
+def run(
+    http: HttpClient,
+    components: dict[str, dict],
+    from_minor: str | None,
+    to_minor: str,
+    cluster: ClusterState | None = None,
+    cluster_warnings: list[str] | None = None,
+    cli_current: dict[str, str] | None = None,
+    cli_target: dict[str, str] | None = None,
+    search_issues: bool = True,
+    lookback: int = 5,
+    log: Log = lambda _m: None,
+) -> Report:
+    if cluster:
+        if from_minor and from_minor != cluster.version:
+            log(f"  ! --from {from_minor} 대신 클러스터 실제 버전 {cluster.version} 을 사용합니다.")
+        from_minor = cluster.version
+    if not from_minor:
+        raise ValueError("--from 또는 --cluster 중 하나는 필요합니다.")
+    from_minor = versions.minor_str(versions.parse_minor(from_minor))
+    path = versions.upgrade_path(from_minor, to_minor)
+
+    report = Report(
+        from_minor=from_minor,
+        to_minor=to_minor,
+        path=path,
+        generated_at=dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
+        cluster=cluster,
+        warnings=list(cluster_warnings or []),
+    )
+    if cluster:
+        report.cluster_findings = cluster_findings(cluster, to_minor, components)
+    log("[1/2] Kubernetes / EKS 변경사항")
+    report.versions = build_version_reports(http, path, report.warnings, log)
+    log("[2/2] 컴포넌트 릴리스 / 이슈")
+    report.components = build_component_reports(
+        http, components, to_minor, cluster, cli_current or {}, cli_target or {},
+        search_issues, lookback, report.warnings, log,
+    )
+    return report
+
+
+def parse_kv(pairs: list[str] | None, flag: str) -> dict[str, str]:
+    out = {}
+    for p in pairs or []:
+        if not re.fullmatch(r"[\w.-]+=\S+", p):
+            raise ValueError(f"{flag} 는 name=version 형식이어야 합니다: {p!r}")
+        k, v = p.split("=", 1)
+        out[k] = v
+    return out
