@@ -62,6 +62,8 @@ class AddonCompat:
 class ComponentReport:
     name: str
     repo: str | None
+    eks_addon: str | None = None
+    fetch_failed: bool = False
     current: str | None = None
     current_source: str = ""  # 'cluster(add-on)', 'cluster(image)', 'cli', ''
     target: str | None = None
@@ -114,8 +116,10 @@ class Report:
     to_minor: str
     path: list[str]
     generated_at: str
+    source: str = ""  # 입력 파일 경로 등
     cluster: ClusterState | None = None
-    cluster_findings: list[Finding] = field(default_factory=list)
+    nodegroups: list[NodeGroup] = field(default_factory=list)  # 입력 파일로 받은 노드그룹
+    env_findings: list[Finding] = field(default_factory=list)
     versions: list[VersionReport] = field(default_factory=list)
     components: list[ComponentReport] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

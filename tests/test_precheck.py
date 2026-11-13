@@ -112,10 +112,3 @@ def test_images_to_versions():
              "aws-load-balancer-controller": {"image_match": "aws-load-balancer-controller:"},
              "foo": {"image_match": "foo:"}}
     assert images_to_versions(obj, comps) == {"karpenter": "1.0.6", "aws-load-balancer-controller": "v2.8.1"}
-
-
-def test_parse_kv():
-    assert precheck.parse_kv(["vpc-cni=v1.18.0"], "--current") == {"vpc-cni": "v1.18.0"}
-    import pytest
-    with pytest.raises(ValueError):
-        precheck.parse_kv(["vpc-cni"], "--current")

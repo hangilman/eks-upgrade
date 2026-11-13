@@ -20,7 +20,7 @@ def _bullets(items: list[str], limit: int) -> list[str]:
 
 def _count(report: Report) -> dict[str, int]:
     c = {CRITICAL: 0, REVIEW: 0, SECURITY: 0, "issues": 0}
-    for f in report.cluster_findings:
+    for f in report.env_findings:
         c[f.severity] = c.get(f.severity, 0) + 1
     for v in report.versions:
         c[CRITICAL] += len(v.removed_apis) + len(v.eks_important) + len(v.urgent_notes)
@@ -41,9 +41,9 @@ def _cluster_section(report: Report) -> list[str]:
         f"- 컨트롤 플레인: `{s.version}` (platform `{s.platform_version}`)",
         "",
     ]
-    if report.cluster_findings:
+    if report.env_findings:
         out += ["### 클러스터 점검 결과", ""]
-        out += [f"- {ICON[f.severity]} {f.text}" for f in report.cluster_findings]
+        out += [f"- {ICON[f.severity]} {f.text}" for f in report.env_findings]
         out.append("")
     if s.nodegroups:
         out += ["### Managed Node Group", "", "| 이름 | 버전 | AMI 타입 | AMI 릴리스 | Capacity |", "|---|---|---|---|---|"]
@@ -104,7 +104,7 @@ def _version_section(v: VersionReport, limit: int) -> list[str]:
     return out
 
 
-def _component_section(c: ComponentReport, limit: int) -> list[str]:
+def _component_section(c: ComponentReport, limit: int, target_minor: str) -> list[str]:
     title = f"### {c.name}" + (f" ([{c.repo}](https://github.com/{c.repo}))" if c.repo else "")
     out = [title, ""]
     cur = f"`{c.current}` ({c.current_source})" if c.current else "알 수 없음"
@@ -122,6 +122,16 @@ def _component_section(c: ComponentReport, limit: int) -> list[str]:
             ok = {True: "✅", False: "❌", None: "-"}[info.get("current_compatible")]
             out.append(f"| {minor} | {ok} | {info.get('default') or '-'} | {info.get('latest') or '-'} |")
         out.append("")
+    elif c.eks_addon:
+        out += [
+            f"- 목표 EKS 버전과의 호환 add-on 버전 확인 (AWS CLI):",
+            "",
+            "  ```bash",
+            f"  aws eks describe-addon-versions --addon-name {c.eks_addon} --kubernetes-version {target_minor} \\",
+            "    --query 'addons[].addonVersions[].[addonVersion, compatibilities[0].defaultVersion]' --output table",
+            "  ```",
+            "",
+        ]
 
     for sev, label in ((CRITICAL, "Breaking / Action required"), (SECURITY, "보안 수정"), (REVIEW, "Deprecation / 동작 변경")):
         items = [f for f in c.findings if f.severity == sev]
@@ -167,15 +177,51 @@ def _checklist(report: Report) -> list[str]:
     return out
 
 
+def _impact_table(report: Report) -> list[str]:
+    """입력한 컴포넌트별 영향도를 한눈에 보는 표."""
+    if not report.components:
+        return []
+    out = [
+        "### 컴포넌트별 영향도",
+        "",
+        "| 컴포넌트 | 현재 → 목표 | 분석 릴리스 | 🔴 | 🔒 | 🟡 | 🐛 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for c in report.components:
+        cnt = {s: sum(1 for f in c.findings if f.severity == s) for s in (CRITICAL, SECURITY, REVIEW)}
+        span = f"{c.current or '?'} → {c.target or '?'}" if c.repo else f"{c.current or '?'} (Kubernetes 와 함께 변경)"
+        rel = "⚠️ 수집 실패" if c.fetch_failed else (str(len(c.release_tags)) if c.repo else "-")
+        out.append(
+            f"| {c.name} | {span} | {rel} | {cnt[CRITICAL] or ''} | {cnt[SECURITY] or ''} | {cnt[REVIEW] or ''} | {len(c.issues) or ''} |"
+        )
+    return out + [""]
+
+
+def _nodegroup_input_section(report: Report, n: int) -> list[str]:
+    out = [f"## {n}. 노드그룹 점검 (입력값 기준)", ""]
+    out += ["| 이름 | 버전 | AMI 타입 |", "|---|---|---|"]
+    out += [f"| {g.name} | {g.version} | {g.ami_type or '-'} |" for g in report.nodegroups]
+    out.append("")
+    if report.env_findings:
+        out += [f"- {ICON[f.severity]} {f.text}" for f in report.env_findings]
+    else:
+        out.append("- ✅ AMI 타입 / 버전 차이(skew) 문제 없음")
+    return out + [""]
+
+
 def render(report: Report, limit: int = 20) -> str:
     c = _count(report)
     path = " → ".join([report.from_minor, *report.path])
+    if report.cluster:
+        target_line = f"- 대상 클러스터: `{report.cluster.name}` (read-only 조회)"
+    else:
+        target_line = f"- 입력: `{report.source}`" if report.source else "- 입력: 직접 지정"
     out = [
         f"# EKS 업그레이드 사전 점검 리포트: {report.from_minor} → {report.to_minor}",
         "",
         f"- 생성 시각: {report.generated_at}",
         f"- 업그레이드 경로: {path} (컨트롤 플레인은 한 번에 1 마이너씩만 업그레이드 가능)",
-        f"- 대상 클러스터: `{report.cluster.name}`" if report.cluster else "- 대상 클러스터: 지정 안 함 (오프라인 분석)",
+        target_line,
         "",
         "> 이 리포트는 공개 문서/Release note 를 규칙 기반으로 자동 추출한 결과입니다. "
         "누락이나 오분류가 있을 수 있으므로 최종 판단 전 원문 링크를 확인하세요.",
@@ -191,16 +237,22 @@ def render(report: Report, limit: int = 20) -> str:
         f"| ⚠️ 수집 경고 | {len(report.warnings)} |",
         "",
     ]
+    out += _impact_table(report)
     n = 1
     if report.cluster:
         out += _cluster_section(report)
+        n += 1
+    elif report.nodegroups:
+        out += _nodegroup_input_section(report, n)
         n += 1
     out += [f"## {n}. Kubernetes / EKS 변경사항", ""]
     for v in report.versions:
         out += _version_section(v, limit)
     out += [f"## {n + 1}. Add-on / 컴포넌트", ""]
+    if not report.components:
+        out += ["_입력한 add-on 이 없습니다. 입력 파일의 `addons:` 에 사용 중인 add-on 과 버전을 적으면 함께 분석합니다._", ""]
     for comp in report.components:
-        out += _component_section(comp, limit)
+        out += _component_section(comp, limit, report.to_minor)
     out += _checklist(report)
     if report.warnings:
         out += ["## 수집 경고", ""] + [f"- {w}" for w in report.warnings] + [""]

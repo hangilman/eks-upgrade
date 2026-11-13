@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
-import re
 from collections.abc import Callable
 
 from . import versions
 from .classify import classify_release
 from .http import FetchError, HttpClient, RateLimited
-from .models import CRITICAL, INFO, REVIEW, ClusterState, ComponentReport, Finding, Report, VersionReport
+from .models import CRITICAL, INFO, REVIEW, ClusterState, ComponentReport, Finding, NodeGroup, Report, VersionReport
 from .sources import eks_docs, k8s
 from .sources.github import DEFAULT_TAG_PATTERN, GitHub, latest_version, select_releases
 
@@ -79,7 +78,7 @@ def _resolve_versions(
     addon = spec.get("eks_addon")
     current, current_src = None, ""
     if name in cli_current:
-        current, current_src = cli_current[name], "CLI 지정"
+        current, current_src = cli_current[name], "입력값"
     elif cluster and addon and addon in cluster.addons:
         current, current_src = cluster.addons[addon], "클러스터(EKS add-on)"
     elif cluster and name in cluster.image_versions:
@@ -87,7 +86,7 @@ def _resolve_versions(
 
     target, target_src = None, ""
     if name in cli_target:
-        target, target_src = cli_target[name], "CLI 지정"
+        target, target_src = cli_target[name], "입력값"
     elif cluster and addon and addon in cluster.addon_defaults and current_src == "클러스터(EKS add-on)":
         target, target_src = cluster.addon_defaults[addon], "목표 EKS 버전의 기본(default) add-on 버전"
     return current, current_src, target, target_src
@@ -110,7 +109,7 @@ def build_component_reports(
     reports = []
     for name, spec in components.items():
         repo = spec.get("repo")
-        cr = ComponentReport(name=name, repo=repo)
+        cr = ComponentReport(name=name, repo=repo, eks_addon=spec.get("eks_addon"))
         cr.current, cr.current_source, cr.target, cr.target_source = _resolve_versions(
             name, spec, cluster, cli_current, cli_target
         )
@@ -131,6 +130,7 @@ def build_component_reports(
             releases = gh.releases(repo)
         except FetchError as e:
             warnings.append(f"{name} 릴리스 수집 실패: {e}")
+            cr.fetch_failed = True
             cr.notes.append("릴리스 수집 실패 — 하단 '수집 경고' 참고")
             reports.append(cr)
             continue
@@ -142,7 +142,7 @@ def build_component_reports(
         if not cr.current:
             cr.notes.append(
                 f"현재 버전을 알 수 없어 최근 {lookback}개 릴리스만 분석했습니다. "
-                f"`--current {name}=vX.Y.Z` 또는 `--cluster` 로 지정하면 정확해집니다."
+                "입력 파일에 현재 버전을 적으면 정확해집니다."
             )
         for r in selected:
             cr.release_tags.append((r.tag, r.url))
@@ -182,11 +182,10 @@ def _search_issues(gh: GitHub, repo: str, spec: dict, target: str | None, to_min
     return result[:8]
 
 
-def cluster_findings(state: ClusterState, to_minor: str, components: dict[str, dict]) -> list[Finding]:
+def nodegroup_findings(nodegroups: list[NodeGroup], to_minor: str) -> list[Finding]:
     out: list[Finding] = []
     target = versions.parse_minor(to_minor)
-
-    for ng in state.nodegroups:
+    for ng in nodegroups:
         try:
             ngv = versions.parse_minor(ng.version)
         except ValueError:
@@ -202,7 +201,11 @@ def cluster_findings(state: ClusterState, to_minor: str, components: dict[str, d
             out.append(Finding(CRITICAL, f"노드그룹 `{ng.name}` 은 AMI 타입 `{ng.ami_type}`(Amazon Linux 2)입니다. "
                                          f"EKS 는 {versions.minor_str(AL2_LAST_MINOR)} 이후 AL2 AMI 를 제공하지 않으므로 "
                                          "AL2023 또는 Bottlerocket 으로 전환해야 합니다."))
+    return out
 
+
+def cluster_findings(state: ClusterState, to_minor: str, components: dict[str, dict]) -> list[Finding]:
+    out = nodegroup_findings(state.nodegroups, to_minor)
     for ins in state.insights:
         if ins.status == "ERROR":
             out.append(Finding(CRITICAL, f"Upgrade Insight `{ins.name}` (대상 {ins.kubernetes_version}): {ins.reason}"))
@@ -232,6 +235,8 @@ def run(
     cli_target: dict[str, str] | None = None,
     search_issues: bool = True,
     lookback: int = 5,
+    nodegroups: list[NodeGroup] | None = None,
+    source: str = "",
     log: Log = lambda _m: None,
 ) -> Report:
     if cluster:
@@ -248,11 +253,15 @@ def run(
         to_minor=to_minor,
         path=path,
         generated_at=dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
+        source=source,
         cluster=cluster,
+        nodegroups=list(nodegroups or []),
         warnings=list(cluster_warnings or []),
     )
     if cluster:
-        report.cluster_findings = cluster_findings(cluster, to_minor, components)
+        report.env_findings = cluster_findings(cluster, to_minor, components)
+    elif report.nodegroups:
+        report.env_findings = sorted(nodegroup_findings(report.nodegroups, to_minor), key=lambda f: f.severity != CRITICAL)
     log("[1/2] Kubernetes / EKS 변경사항")
     report.versions = build_version_reports(http, path, report.warnings, log)
     log("[2/2] 컴포넌트 릴리스 / 이슈")
@@ -261,13 +270,3 @@ def run(
         search_issues, lookback, report.warnings, log,
     )
     return report
-
-
-def parse_kv(pairs: list[str] | None, flag: str) -> dict[str, str]:
-    out = {}
-    for p in pairs or []:
-        if not re.fullmatch(r"[\w.-]+=\S+", p):
-            raise ValueError(f"{flag} 는 name=version 형식이어야 합니다: {p!r}")
-        k, v = p.split("=", 1)
-        out[k] = v
-    return out

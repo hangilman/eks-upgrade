@@ -6,3 +6,5 @@ build/
 dist/
 # 생성된 리포트는 기본적으로 커밋하지 않음 (작업계획서 근거로 남길 때만 git add -f)
 reports/*.md
+env*.yaml
+!src/eks_precheck/data/env-template.yaml
