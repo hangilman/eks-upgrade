@@ -39,7 +39,7 @@ nodegroups:
 @pytest.mark.parametrize("text, msg", [
     ('cluster: {current: 1.30, target: "1.31"}', "따옴표"),
     ('cluster: {current: "1.31", target: "1.30"}', "높아야"),
-    ('cluster: {current: "1.30", target: "1.31"}\naddons: {istio: "1.22.0"}', "repo"),
+    ('cluster: {current: "1.30", target: "1.31"}\naddons: {my-operator: "1.22.0"}', "repo"),
     ('cluster: {target: "1.31"}', "cluster.current"),
 ])
 def test_input_errors(tmp_path, text, msg):
@@ -88,3 +88,22 @@ def test_windows_saved_files(tmp_path, encode):
     p.write_bytes(encode('# 한글 주석\ncluster:\n  current: "1.31"\n  target: "1.32"\n'))
     env = envfile.load(p, KNOWN)
     assert (env.current, env.target) == ("1.31", "1.32")
+
+
+def test_install_type(tmp_path):
+    env = envfile.load(_write(tmp_path, """
+cluster: {current: "1.33", target: "1.34"}
+addons:
+  vpc-cni: "v1.19.0-eksbuild.1"
+  coredns: {current: "1.11.3", install: helm}
+  karpenter: "1.0.6"
+nodegroups:
+  - {name: app, version: "1.33", ami_type: AL2023_x86_64_STANDARD, ami_id: ami-0123}
+"""), KNOWN)
+    assert env.components["vpc-cni"]["install"] == "eks-addon" and env.components["vpc-cni"]["eks_addon"] == "vpc-cni"
+    assert env.components["coredns"]["install"] == "helm" and "eks_addon" not in env.components["coredns"]
+    assert env.components["karpenter"]["install"] == "helm"
+    assert env.nodegroups[0].ami_id == "ami-0123"
+    with pytest.raises(envfile.InputError, match="EKS 관리형 add-on 으로 제공되지 않는"):
+        envfile.from_dict({"cluster": {"current": "1.33", "target": "1.34"},
+                           "addons": {"karpenter": {"current": "1.0.6", "install": "eks-addon"}}}, KNOWN)

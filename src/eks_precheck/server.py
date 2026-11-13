@@ -18,13 +18,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, config, envfile, precheck
-from .http import DEFAULT_CACHE_DIR, HttpClient
+from . import __version__, config, envfile, precheck, versions
+from .http import DEFAULT_CACHE_DIR, FetchError, HttpClient
 from .md_render import render_html
 from .report import render
-from .sources.github import resolve_token
+from .sources import eks_docs, eks_versions, k8s
+from .sources.ami import AMI_TYPES
+from .sources.awscli import AwsCliError, run_json
+from .sources.github import DEFAULT_TAG_PATTERN, GitHub, resolve_token, versioned
 
 REPORT_NAME = re.compile(r"^[\w.-]+\.md$")
 MAX_BODY = 256 * 1024
@@ -47,6 +50,7 @@ class App:
         self.http_factory = http_factory
         self.jobs: dict[str, dict] = {}
         self.lock = threading.Lock()
+        self._cache: dict[tuple, dict] = {}
 
     # ---- 초기 데이터 ----
     def init_payload(self) -> dict:
@@ -60,13 +64,100 @@ class App:
         return {
             "version": __version__,
             "components": {
-                name: {"repo": spec.get("repo"), "eks_addon": spec.get("eks_addon")} for name, spec in self.known.items()
+                name: {"title": spec.get("title") or name, "repo": spec.get("repo"), "eks_addon": spec.get("eks_addon")}
+                for name, spec in self.known.items()
             },
+            "ami_types": list(AMI_TYPES),
             "env": _jsonable(env),
             "env_error": env_error,
             "github_token": bool(resolve_token()),
             "reports": self.list_reports(),
         }
+
+    # ---- 선택지 ----
+    def _cached(self, key: tuple, fn: Callable[[], dict]) -> dict:
+        with self.lock:
+            if key in self._cache:
+                return self._cache[key]
+        value = fn()
+        if not value.get("error"):
+            with self.lock:
+                self._cache[key] = value
+        return value
+
+    def cluster_versions(self, profile: str | None, region: str | None) -> dict:
+        return self._cached(("versions", profile, region), lambda: self._cluster_versions(profile, region))
+
+    def _cluster_versions(self, profile, region) -> dict:
+        http = self.http_factory(False)
+        support = eks_versions.resolve(http, True, profile, region, lambda _m: None)
+        status_map = {eks_versions.STANDARD: "standard", eks_versions.EXTENDED: "extended", eks_versions.UNSUPPORTED: "ended"}
+        found = {m: status_map[s] for m, s in support.versions.items()}
+        source = support.source
+        if not found:  # 공식 출처 실패 → GitHub 문서 원본 (확인 필요 표시)
+            for raw, _web in eks_docs.DOCS.values():
+                try:
+                    for mm in eks_docs.available_minors(http.get(raw)):
+                        found[versions.minor_str(mm)] = "unverified"
+                except FetchError:
+                    pass
+            if found:  # 문서 원본은 갱신이 늦으므로 업스트림에 정식 출시된 다음 버전도 선택지로 제공
+                newest = max(versions.parse_minor(m) for m in found)
+                for nxt in range(newest[1] + 1, newest[1] + 4):
+                    minor = f"{newest[0]}.{nxt}"
+                    try:
+                        if not k8s.release_section(http.get(k8s.CHANGELOG_RAW.format(minor=minor)), minor):
+                            break
+                    except FetchError:
+                        break
+                    found[minor] = "unverified"
+            source = "GitHub 문서 원본 + 업스트림 Kubernetes (EKS 지원 여부 확인 필요)" if found else "기본 목록 (EKS 지원 여부 확인 필요)"
+        if not found:
+            found = {f"1.{m}": "unverified" for m in range(28, 38)}
+        known = sorted((versions.parse_minor(m) for m in found), reverse=True)
+        oldest = known[-1]
+        for m in range(oldest[1] - 1, max(oldest[1] - 6, 20), -1):  # 지원 종료된 예전 버전도 '현재 버전' 선택용으로 포함
+            found.setdefault(f"{oldest[0]}.{m}", "ended")
+        items = sorted(found.items(), key=lambda kv: versions.parse_minor(kv[0]), reverse=True)
+        return {"source": source, "errors": support.errors,
+                "versions": [{"minor": m, "status": s} for m, s in items]}
+
+    def component_versions(self, name: str, install: str, k8s: str | None, profile, region) -> dict:
+        spec = self.known.get(name)
+        if spec is None:
+            return {"versions": [], "source": "", "error": "알 수 없는 컴포넌트"}
+        return self._cached(("comp", name, install, k8s, profile, region),
+                            lambda: self._component_versions(name, spec, install, k8s, profile, region))
+
+    def _component_versions(self, name, spec, install, k8s, profile, region) -> dict:
+        errors = []
+        if install == envfile.INSTALL_EKS and spec.get("eks_addon"):
+            args = ["eks", "describe-addon-versions", "--addon-name", spec["eks_addon"]]
+            if k8s:
+                args += ["--kubernetes-version", k8s]
+            try:
+                data = run_json(args, profile, region, timeout=40)
+                vs, default = [], None
+                for entry in (data or {}).get("addons", []):
+                    for av in entry.get("addonVersions", []):
+                        vs.append(av["addonVersion"])
+                        if any(c.get("defaultVersion") and (not k8s or c.get("clusterVersion") == k8s)
+                               for c in av.get("compatibilities", [])):
+                            default = av["addonVersion"]
+                vs = sorted(set(vs), key=lambda v: versions.parse(v) or (0, 0, 0), reverse=True)
+                return {"versions": vs, "default": default,
+                        "source": f"AWS API (describe-addon-versions{', Kubernetes ' + k8s if k8s else ''})"}
+            except AwsCliError as e:
+                errors.append(str(e))
+        if spec.get("repo"):
+            try:
+                releases = GitHub(self.http_factory(False)).releases(spec["repo"], max_pages=1)
+                vs = [versions.fmt(v) for v, _ in versioned(
+                    releases, spec.get("tag_pattern", DEFAULT_TAG_PATTERN), spec.get("tag_prefix", ""))]
+                return {"versions": vs[::-1][:40], "default": None, "source": "GitHub Release", "notes": errors}
+            except FetchError as e:
+                errors.append(f"GitHub Release 조회 실패: {e}")
+        return {"versions": [], "source": "", "error": "; ".join(errors) or "버전 목록을 제공하지 않는 컴포넌트"}
 
     def list_reports(self) -> list[str]:
         if not self.reports_dir.is_dir():
@@ -178,6 +269,12 @@ def make_handler(app: App, port_ref: dict):
                 return self._send(HTTPStatus.OK, page.encode("utf-8"), "text/html; charset=utf-8")
             if path == "/api/init":
                 return self._json(HTTPStatus.OK, app.init_payload())
+            q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items() if v and v[0]}
+            if path == "/api/versions":
+                return self._json(HTTPStatus.OK, app.cluster_versions(q.get("profile"), q.get("region")))
+            if path == "/api/component-versions":
+                return self._json(HTTPStatus.OK, app.component_versions(
+                    q.get("name", ""), q.get("install", ""), q.get("k8s"), q.get("profile"), q.get("region")))
             if path == "/api/reports":
                 return self._json(HTTPStatus.OK, {"reports": app.list_reports()})
             if path.startswith("/api/reports/"):

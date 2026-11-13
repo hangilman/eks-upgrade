@@ -239,9 +239,12 @@ kubectl get deploy -A -o jsonpath='{..image}' | tr ' ' '\n' | grep -E 'karpenter
 
 | 영역 | 내용 |
 |---|---|
-| 왼쪽 입력 | 현재/목표 버전, add-on(목록에서 선택 + 버전), 노드그룹, 옵션(이슈 검색, AWS CLI 확인, AWS profile/region) |
+| 왼쪽 입력 | 현재/목표 버전(**선택 목록**), add-on(구성요소 + 설치 방식 EKS add-on / Helm + 버전 목록), 노드그룹(버전, AMI 타입, 사용 중 AMI ID), 옵션 |
 | 오른쪽 결과 | 진행 로그 → 리포트 표시, **Markdown 다운로드**, **인쇄 / PDF**, 이전 리포트 다시 보기 |
 
+- **클러스터 버전 목록**: AWS CLI 가 있으면 `aws eks describe-cluster-versions` 결과(standard / extended 표시), 없으면 AWS 문서 사이트 → GitHub 문서 원본 + 업스트림 Kubernetes 출시 버전 순으로 채웁니다. 공식 출처가 아니면 "지원 확인 필요"로 표시됩니다.
+- **add-on 버전 목록**: 버전 칸을 클릭하면 EKS 관리형 add-on 은 `describe-addon-versions`(AWS CLI 필요, EKS 기본 버전 표시), Helm 설치는 GitHub Release 태그를 보여 줍니다. 목록에 없는 값도 직접 입력할 수 있습니다.
+- **노드그룹 AMI**: AMI 타입과 버전을 고르면 리포트에 현재/목표 버전의 **권장 EKS 최적화 AMI ID 와 릴리스 버전(조회 시점 기준)** 이 나옵니다. 사용 중인 AMI ID 를 넣으면 권장 AMI 와 다른지 표시합니다.
 - 마지막 입력값은 브라우저에 저장되어 다음에 열 때 그대로 채워집니다. 처음 열 때는 같은 폴더의 `env.yaml` 이 있으면 그 값을 불러옵니다.
 - 생성한 리포트는 CLI 와 똑같이 `reports/` 폴더에 저장됩니다.
 - 서버는 **이 PC(127.0.0.1)에서만 접속**됩니다. 다른 사람이 같은 네트워크에서 접근할 수 없습니다.
@@ -314,6 +317,19 @@ addons:
 [EKS User Guide](https://github.com/awsdocs/amazon-eks-user-guide), `kubernetes/kubernetes` CHANGELOG, 각 add-on GitHub Release/Issue.
 버전별 내용은 실행할 때마다 원문에서 가져오므로 새 버전이 나와도 도구를 고칠 필요가 없습니다.
 
+### AWS CLI 로 조회하는 항목 (모두 읽기 전용)
+
+AWS CLI 가 설치·로그인되어 있으면 아래를 자동으로 조회합니다. 없거나 권한이 없으면 해당 항목만 건너뛰고, 리포트에 직접 확인할 명령을 안내합니다.
+
+| 항목 | 명령 | 필요 권한 |
+|---|---|---|
+| EKS 지원 버전 | `aws eks describe-cluster-versions` | `eks:DescribeClusterVersions` |
+| add-on 버전 목록 / EKS 기본 버전 | `aws eks describe-addon-versions` | `eks:DescribeAddonVersions` |
+| 권장 EKS 최적화 AMI ID | `aws ssm get-parameters --names /aws/service/eks/optimized-ami/...` | `ssm:GetParameters` |
+
+AMI ID 는 **리전마다 다릅니다.** 화면의 옵션 또는 `env.yaml` 의 `aws.region` 에 클러스터 리전을 지정하세요 (생략 시 AWS CLI 기본 리전).
+권장 AMI 는 AWS 가 새 AMI 를 릴리스하면 바뀌므로, Launch Template 에는 작업 직전에 다시 조회한 값을 넣으세요.
+
 ### EKS 지원 버전은 어떻게 확인하나
 
 EKS 는 업스트림 Kubernetes 보다 늦게 새 버전을 출시하므로, 목표 버전이 EKS 에서 지원되는지 아래 순서로 확인합니다.
@@ -322,7 +338,7 @@ EKS 는 업스트림 Kubernetes 보다 늦게 새 버전을 출시하므로, 목
 2. **AWS 문서 사이트** — docs.aws.amazon.com 의 EKS 버전 페이지
 3. 둘 다 실패하면 GitHub 문서 원본만 참고하되, **원본은 갱신이 수개월 늦을 수 있어 "미지원"으로 단정하지 않고 🟡 "확인 필요"로 표시**합니다.
 
-AWS CLI 확인이 필요 없으면 `--no-aws` 를 붙이세요. 필요한 IAM 권한은 `eks:DescribeClusterVersions` (읽기 전용) 하나입니다.
+AWS CLI 조회가 필요 없으면 `--no-aws` 를 붙이세요 (화면에서는 옵션의 체크 해제).
 
 ## 한계
 - 분류는 키워드 기반이라 오분류·누락이 있을 수 있습니다. 최종 판단은 리포트의 원문 링크로 하세요.

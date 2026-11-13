@@ -70,6 +70,8 @@ class ComponentReport:
     name: str
     repo: str | None
     eks_addon: str | None = None
+    install: str = ""  # 'eks-addon' | 'helm' | '' (cluster 모드)
+    title: str = ""
     fetch_failed: bool = False
     current: str | None = None
     current_source: str = ""  # 'cluster(add-on)', 'cluster(image)', 'cli', ''
@@ -90,6 +92,7 @@ class NodeGroup:
     ami_type: str
     release_version: str = ""
     capacity_type: str = ""
+    ami_id: str = ""  # 사용자가 입력한 현재 사용 중인 AMI ID (선택)
 
 
 @dataclass
@@ -127,6 +130,8 @@ class Report:
     cluster: ClusterState | None = None
     nodegroups: list[NodeGroup] = field(default_factory=list)  # 입력 파일로 받은 노드그룹
     env_findings: list[Finding] = field(default_factory=list)
+    # 노드그룹 이름 -> {'current': AmiInfo, 'target': AmiInfo}
+    amis: dict[str, dict] = field(default_factory=dict)
     versions: list[VersionReport] = field(default_factory=list)
     components: list[ComponentReport] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

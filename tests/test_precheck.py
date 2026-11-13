@@ -66,7 +66,7 @@ def test_offline_run_end_to_end(fixture_text, fake_http):
     md = render(report)
     assert "# EKS 업그레이드 사전 점검 리포트: 1.30 → 1.31" in md
     assert "removed legacy mode" in md and "[#7](https://gh/i/7)" in md
-    assert "롤백 주의" in md
+    assert "### 롤백 계획" in md and "7일 이내" in md and "다운그레이드할 수 없습니다" not in md
 
 
 def test_rate_limit_stops_issue_search(fixture_text, fake_http):
@@ -174,3 +174,24 @@ def test_ended_from_api(fixture_text, fake_http, monkeypatch):
     _api({"1.30": "UNSUPPORTED", "1.31": "EXTENDED_SUPPORT"}, monkeypatch)
     report = precheck.run(fake_http(_eks_status_routes(fixture_text)), {}, "1.29", "1.31")
     assert [v.eks_status for v in report.versions] == ["ended", "extended"]
+
+
+def test_tag_prefix_and_follows_k8s_minor(fake_http, fixture_text):
+    routes = _routes(fixture_text)
+    routes[f"{API}/repos/kubernetes/autoscaler/releases"] = [
+        _rel("cluster-autoscaler-1.32.1", "* fix"),
+        _rel("cluster-autoscaler-1.31.3", "* Breaking: removed flag --foo"),
+        _rel("cluster-autoscaler-chart-9.43.0", "* chart"),
+        _rel("vertical-pod-autoscaler-1.2.0", "* vpa"),
+    ]
+    comps = {"cluster-autoscaler": {"repo": "kubernetes/autoscaler", "tag_prefix": "cluster-autoscaler-",
+                                    "follows_k8s_minor": True, "install": "helm"}}
+    report = precheck.run(fake_http(routes), comps, "1.30", "1.31", cli_current={"cluster-autoscaler": "1.30.2"}, use_aws=False)
+    ca = report.components[0]
+    assert ca.target == "v1.31.3" and "1.31 에 맞춘" in ca.target_source  # 1.32 가 아닌 목표 마이너 기준
+    assert [t for t, _ in ca.release_tags] == ["cluster-autoscaler-1.31.3"]
+
+    report = precheck.run(fake_http(routes), comps, "1.30", "1.31",
+                          cli_current={"cluster-autoscaler": "1.30.2"}, cli_target={"cluster-autoscaler": "1.32.1"}, use_aws=False)
+    assert any("마이너 버전과 맞춰" in f.text for f in report.components[0].findings)
+    assert "Helm / 직접 설치" in render(report) and "APP VERSION" in render(report)

@@ -92,38 +92,50 @@ class GitHub:
         ]
 
 
+def versioned(
+    releases: list[Release], tag_pattern: str = DEFAULT_TAG_PATTERN, tag_prefix: str = ""
+) -> list[tuple[versions.Version, Release]]:
+    """정식 릴리스만 (버전, 릴리스) 로 변환해 버전 오름차순으로 반환.
+
+    tag_prefix 는 'controller-v1.11.2', 'cluster-autoscaler-1.31.0' 처럼 접두어가 붙은 태그용이다.
+    """
+    pattern = re.compile(tag_pattern)
+    out = []
+    for r in releases:
+        tag = r.tag
+        if tag_prefix:
+            if not tag.startswith(tag_prefix):
+                continue
+            tag = tag[len(tag_prefix):]
+        if r.draft or r.prerelease or not pattern.match(tag) or versions.is_prerelease(tag):
+            continue
+        v = versions.parse(tag)
+        if v:
+            out.append((v, r))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
 def select_releases(
     releases: list[Release],
     current: str | None,
     target: str | None,
     tag_pattern: str = DEFAULT_TAG_PATTERN,
     lookback: int = 5,
+    tag_prefix: str = "",
 ) -> list[Release]:
     """current(미포함) ~ target(포함) 사이의 정식 릴리스를 버전 오름차순으로 반환.
 
     current 를 모르면 target 이하의 최근 `lookback` 개를 반환한다.
     """
-    pattern = re.compile(tag_pattern)
     cur, tgt = versions.parse(current), versions.parse(target)
-    picked = []
-    for r in releases:
-        if r.draft or r.prerelease or not pattern.match(r.tag) or versions.is_prerelease(r.tag):
-            continue
-        v = versions.parse(r.tag)
-        if v is None or (tgt and v > tgt) or (cur and v <= cur):
-            continue
-        picked.append((v, r))
-    picked.sort(key=lambda x: x[0])
-    result = [r for _, r in picked]
+    result = [r for v, r in versioned(releases, tag_pattern, tag_prefix) if not (tgt and v > tgt) and not (cur and v <= cur)]
     return result if cur else result[-lookback:]
 
 
-def latest_version(releases: list[Release], tag_pattern: str = DEFAULT_TAG_PATTERN) -> str | None:
-    pattern = re.compile(tag_pattern)
-    vs = [
-        versions.parse(r.tag)
-        for r in releases
-        if not (r.draft or r.prerelease) and pattern.match(r.tag) and not versions.is_prerelease(r.tag)
-    ]
-    vs = [v for v in vs if v]
-    return versions.fmt(max(vs)) if vs else None
+def latest_version(
+    releases: list[Release], tag_pattern: str = DEFAULT_TAG_PATTERN, tag_prefix: str = "", minor: tuple[int, int] | None = None
+) -> str | None:
+    """최신 정식 릴리스 버전. minor 를 주면 해당 major.minor 안에서의 최신 버전."""
+    vs = [v for v, _ in versioned(releases, tag_pattern, tag_prefix) if minor is None or v[:2] == minor]
+    return versions.fmt(vs[-1]) if vs else None

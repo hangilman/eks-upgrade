@@ -10,6 +10,7 @@ from .classify import classify_release
 from .http import FetchError, HttpClient, RateLimited
 from .models import CRITICAL, INFO, REVIEW, ClusterState, ComponentReport, Finding, NodeGroup, Report, VersionReport
 from .sources import eks_docs, eks_versions, k8s
+from .sources.ami import AmiLookup
 from .sources.eks_versions import SupportInfo
 from .sources.github import DEFAULT_TAG_PATTERN, GitHub, latest_version, select_releases
 
@@ -167,7 +168,8 @@ def build_component_reports(
     reports = []
     for name, spec in components.items():
         repo = spec.get("repo")
-        cr = ComponentReport(name=name, repo=repo, eks_addon=spec.get("eks_addon"))
+        cr = ComponentReport(name=name, repo=repo, eks_addon=spec.get("eks_addon"),
+                             install=spec.get("install", ""), title=spec.get("title", ""))
         cr.current, cr.current_source, cr.target, cr.target_source = _resolve_versions(
             name, spec, cluster, cli_current, cli_target
         )
@@ -193,10 +195,13 @@ def build_component_reports(
             reports.append(cr)
             continue
 
+        tag_prefix = spec.get("tag_prefix", "")
+        if spec.get("follows_k8s_minor"):
+            _check_follows_k8s_minor(cr, releases, tag_pattern, tag_prefix, to_minor)
         if not cr.target:
-            cr.target, cr.target_source = latest_version(releases, tag_pattern), "최신 릴리스"
+            cr.target, cr.target_source = latest_version(releases, tag_pattern, tag_prefix), "최신 릴리스"
         # add-on 버전 'v1.19.0-eksbuild.1' 은 업스트림 태그 'v1.19.0' 기준으로 비교
-        selected = select_releases(releases, cr.current, cr.target, tag_pattern, lookback)
+        selected = select_releases(releases, cr.current, cr.target, tag_pattern, lookback, tag_prefix)
         if not cr.current:
             cr.notes.append(
                 f"현재 버전을 알 수 없어 최근 {lookback}개 릴리스만 분석했습니다. "
@@ -220,6 +225,23 @@ def build_component_reports(
                 warnings.append(f"{name} 이슈 검색 실패: {e}")
         reports.append(cr)
     return reports
+
+
+def _check_follows_k8s_minor(cr: ComponentReport, releases, tag_pattern: str, tag_prefix: str, to_minor: str) -> None:
+    """cluster-autoscaler 처럼 Kubernetes 마이너 버전과 맞춰 써야 하는 컴포넌트."""
+    want = versions.parse_minor(to_minor)
+    if not cr.target:
+        latest = latest_version(releases, tag_pattern, tag_prefix, minor=want)
+        if latest:
+            cr.target, cr.target_source = latest, f"Kubernetes {to_minor} 에 맞춘 최신 버전"
+        else:
+            cr.findings.append(Finding(CRITICAL, f"{cr.name} 는 Kubernetes 마이너 버전과 맞춰 써야 하지만 "
+                                                 f"{to_minor}.x 릴리스가 아직 없습니다. 출시 여부를 확인하세요."))
+            return
+    tv = versions.parse(cr.target)
+    if tv and tv[:2] != want:
+        cr.findings.append(Finding(CRITICAL, f"{cr.name} 는 Kubernetes 마이너 버전과 맞춰 써야 합니다. "
+                                             f"목표 {cr.target} → {to_minor}.x 로 지정하세요."))
 
 
 def _search_issues(gh: GitHub, repo: str, spec: dict, target: str | None, to_minor: str):
@@ -260,6 +282,23 @@ def nodegroup_findings(nodegroups: list[NodeGroup], to_minor: str) -> list[Findi
                                          f"EKS 는 {versions.minor_str(AL2_LAST_MINOR)} 이후 AL2 AMI 를 제공하지 않으므로 "
                                          "AL2023 또는 Bottlerocket 으로 전환해야 합니다."))
     return out
+
+
+def ami_report(nodegroups: list[NodeGroup], to_minor: str, lookup: AmiLookup) -> tuple[dict, list[Finding]]:
+    amis: dict[str, dict] = {}
+    findings: list[Finding] = []
+    for ng in nodegroups:
+        if not ng.ami_type:
+            continue
+        cur = lookup.get(ng.ami_type, ng.version)
+        tgt = lookup.get(ng.ami_type, to_minor)
+        amis[ng.name] = {"current": cur, "target": tgt}
+        if ng.ami_id and cur.image_id and ng.ami_id != cur.image_id:
+            findings.append(Finding(REVIEW, f"노드그룹 `{ng.name}` 의 사용 중 AMI `{ng.ami_id}` 가 Kubernetes {ng.version} "
+                                            f"권장 AMI `{cur.image_id}` 와 다릅니다. 최신 릴리스가 아니거나 커스텀 AMI 일 수 있습니다."))
+        if tgt.extra.get("missing") and not (ng.ami_type.startswith("AL2_") and versions.parse_minor(to_minor) > AL2_LAST_MINOR):
+            findings.append(Finding(CRITICAL, f"노드그룹 `{ng.name}`: {tgt.error}"))
+    return amis, findings
 
 
 def cluster_findings(state: ClusterState, to_minor: str, components: dict[str, dict]) -> list[Finding]:
@@ -322,7 +361,14 @@ def run(
     if cluster:
         report.env_findings = cluster_findings(cluster, to_minor, components)
     elif report.nodegroups:
-        report.env_findings = sorted(nodegroup_findings(report.nodegroups, to_minor), key=lambda f: f.severity != CRITICAL)
+        report.env_findings = nodegroup_findings(report.nodegroups, to_minor)
+    all_nodegroups = cluster.nodegroups if cluster else report.nodegroups
+    if all_nodegroups:
+        log("  - 노드그룹 권장 AMI 조회 (SSM 공개 파라미터)")
+        lookup = AmiLookup(aws_profile, aws_region, enabled=use_aws)
+        report.amis, ami_findings = ami_report(all_nodegroups, to_minor, lookup)
+        report.env_findings += ami_findings
+    report.env_findings.sort(key=lambda f: f.severity != CRITICAL)
     log("[1/2] Kubernetes / EKS 변경사항")
     support = eks_versions.resolve(http, use_aws, aws_profile, aws_region, log)
     report.versions = build_version_reports(http, path, report.warnings, log, support)

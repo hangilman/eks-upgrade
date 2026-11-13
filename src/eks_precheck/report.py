@@ -5,6 +5,7 @@ from __future__ import annotations
 from .models import CRITICAL, REVIEW, SECURITY, ComponentReport, Report, VersionReport
 
 ICON = {CRITICAL: "🔴", REVIEW: "🟡", SECURITY: "🔒"}
+ROLLBACK_DOC = "https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html"
 
 
 def _esc(text: str) -> str:
@@ -52,6 +53,7 @@ def _cluster_section(report: Report) -> list[str]:
             for n in s.nodegroups
         ]
         out += ["", "> Karpenter / self-managed 노드는 위 표에 포함되지 않습니다. `kubectl get nodes -o wide` 로 kubelet 버전을 별도 확인하세요.", ""]
+        out += _ami_section(report)
     if s.insights:
         out += ["### EKS Upgrade Insights", "", "| 상태 | 항목 | 대상 버전 | 사유 |", "|---|---|---|---|"]
         order = {"ERROR": 0, "WARNING": 1, "UNKNOWN": 2, "PASSING": 3}
@@ -115,11 +117,14 @@ def _version_section(v: VersionReport, limit: int) -> list[str]:
 
 
 def _component_section(c: ComponentReport, limit: int, target_minor: str) -> list[str]:
-    title = f"### {c.name}" + (f" ([{c.repo}](https://github.com/{c.repo}))" if c.repo else "")
+    kind = {"eks-addon": " · EKS 관리형 add-on", "helm": " · Helm / 직접 설치"}.get(c.install, "")
+    title = f"### {c.name}{kind}" + (f" ([{c.repo}](https://github.com/{c.repo}))" if c.repo else "")
     out = [title, ""]
     cur = f"`{c.current}` ({c.current_source})" if c.current else "알 수 없음"
     tgt = f"`{c.target}` ({c.target_source})" if c.target else "-"
     out += [f"- 현재: {cur}", f"- 목표: {tgt}"]
+    if c.install == "helm":
+        out.append("- 버전 기준: 애플리케이션 버전 (`helm list -A` 의 **APP VERSION** 열, CHART 버전과 다를 수 있음)")
     if c.release_tags:
         tags = ", ".join(f"[{t}]({u})" for t, u in c.release_tags)
         out.append(f"- 분석한 릴리스 ({len(c.release_tags)}개): {tags}")
@@ -179,9 +184,17 @@ def _checklist(report: Report) -> list[str]:
     out += [f"- [ ] {i}" for i in items]
     out += [
         "",
-        "> ⚠️ **롤백 주의**: EKS 컨트롤 플레인은 다운그레이드할 수 없습니다. 컨트롤 플레인 업그레이드 이후 문제가 생기면 "
-        "workload/add-on 단위로 되돌리거나 Blue/Green(신규 클러스터) 전환으로 대응해야 하므로, 반드시 하위 환경에서 먼저 검증하세요. "
-        "Add-on 과 노드그룹은 이전 버전으로 되돌릴 수 있습니다(노드그룹은 이전 Launch Template/AMI 로 재배포).",
+        "### 롤백 계획",
+        "",
+        f"EKS 는 in-place 업그레이드 후 컨트롤 플레인을 직전 버전으로 되돌리는 [버전 롤백]({ROLLBACK_DOC}) 을 지원합니다. "
+        "주요 조건은 아래와 같으며, 실제 작업 전 문서에서 최신 조건을 다시 확인하세요.",
+        "",
+        "- 업그레이드 완료 후 **7일 이내**, **한 단계(N → N-1)만** 가능합니다. "
+        f"여러 단계({' → '.join([report.from_minor, *report.path])})를 연속으로 올리면 마지막 단계만 되돌릴 수 있습니다.",
+        "- **EKS add-on, 관리형 노드그룹, self-managed 노드는 함께 롤백되지 않습니다.** 노드는 컨트롤 플레인보다 먼저 되돌리고, "
+        "add-on 은 이전 버전과 호환되는 버전으로 별도 다운그레이드해야 합니다.",
+        "- etcd 데이터와 workload 는 유지됩니다. 롤백 전 rollback readiness insight 를 확인하세요.",
+        "- 롤백 조건을 벗어나는 경우(7일 경과 등)를 대비해 하위 환경 선검증과 Blue/Green 전환 계획은 계속 유지하는 것을 권장합니다.",
         "",
     ]
     return out
@@ -207,16 +220,52 @@ def _impact_table(report: Report) -> list[str]:
     return out + [""]
 
 
+def _ami_section(report: Report) -> list[str]:
+    if not report.amis:
+        return []
+    out = ["### 권장 EKS 최적화 AMI (조회 시점 기준)", "",
+           "| 노드그룹 | AMI 타입 | 사용 중 AMI (입력) | 현재 버전 권장 AMI | 목표 버전 권장 AMI |", "|---|---|---|---|---|"]
+    by_name = {g.name: g for g in (report.cluster.nodegroups if report.cluster else report.nodegroups)}
+
+    def cell(info) -> str:
+        if info.image_id:
+            rel = f" · {info.release_version}" if info.release_version else ""
+            return f"`{info.image_id}` ({info.minor}){rel}"
+        return f"- ({info.minor})"
+
+    for name, pair in report.amis.items():
+        g = by_name.get(name)
+        used = f"`{g.ami_id}`" if g and g.ami_id else "-"
+        out.append(f"| {name} | {pair['current'].ami_type} | {used} | {cell(pair['current'])} | {cell(pair['target'])} |")
+    infos = [i for pair in report.amis.values() for i in pair.values()]
+    ok = next((i for i in infos if i.image_id), None)
+    out.append("")
+    if ok:
+        out.append(f"- 조회: {ok.queried_at}, 리전 `{ok.region or 'AWS CLI 기본값'}`. AMI ID 는 리전별로 다르며, "
+                   "AWS 가 새 AMI 를 릴리스하면 권장 값이 바뀝니다. Launch Template 에는 작업 직전에 다시 확인한 값을 넣으세요.")
+    errors = {(i.ami_type, i.minor): i for i in infos if i.error and not i.extra.get("missing")}
+    if errors:
+        out.append("- 조회하지 못한 항목은 아래 명령으로 직접 확인할 수 있습니다:")
+        out.append("")
+        out.append("  ```")
+        out += [f"  {i.command}" for i in errors.values() if i.parameter]
+        out.append("  ```")
+        reasons = sorted({i.error for i in errors.values()})
+        out += [f"  - 사유: {r}" for r in reasons]
+    missing = [i for i in infos if i.extra.get("missing")]
+    for i in missing:
+        out.append(f"- ⚠️ {i.error}")
+    return out + [""]
+
+
 def _nodegroup_input_section(report: Report, n: int) -> list[str]:
     out = [f"## {n}. 노드그룹 점검 (입력값 기준)", ""]
-    out += ["| 이름 | 버전 | AMI 타입 |", "|---|---|---|"]
-    out += [f"| {g.name} | {g.version} | {g.ami_type or '-'} |" for g in report.nodegroups]
-    out.append("")
     if report.env_findings:
         out += [f"- {ICON[f.severity]} {f.text}" for f in report.env_findings]
     else:
         out.append("- ✅ AMI 타입 / 버전 차이(skew) 문제 없음")
-    return out + [""]
+    out.append("")
+    return out + _ami_section(report)
 
 
 def _blockers(report: Report) -> list[str]:

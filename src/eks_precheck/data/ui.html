@@ -44,10 +44,16 @@
   .ver-pair { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; }
   .ver-pair label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
   .arrow { padding-top: 16px; color: var(--muted); }
-  .grid-addon { display: grid; grid-template-columns: 1.5fr 1.4fr 1fr 28px; gap: 6px; margin-bottom: 6px; }
-  .grid-addon .custom { grid-column: 1 / 4; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .grid-ng { display: grid; grid-template-columns: 1fr 70px 1.4fr 28px; gap: 6px; margin-bottom: 6px; }
-  .cols-head { font-size: 11px; color: var(--muted); }
+  .item { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; display: grid; gap: 6px; }
+  .line { display: grid; gap: 6px; align-items: end; }
+  .addon .l1 { grid-template-columns: 1.5fr 1fr 28px; }
+  .ng .l1 { grid-template-columns: 1fr 1fr 28px; }
+  .line.two { grid-template-columns: 1fr 1fr; }
+  .line > * { min-width: 0; }
+  label.f span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .item-hint, .ver-note { font-size: 11.5px; color: var(--muted); }
+  .ver-note { margin-top: 6px; }
+  select:disabled { opacity: .6; }
   button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); padding: 6px 10px; }
   button:hover { background: var(--row-hover); }
   button.icon { padding: 0; width: 28px; height: 30px; color: var(--muted); }
@@ -104,20 +110,19 @@
     <div class="panel">
       <h2>1. 클러스터 버전</h2>
       <div class="ver-pair">
-        <div><label for="cur">현재</label><input type="text" id="cur" placeholder="1.35" list="k8s-versions"></div>
+        <div><label for="cur">현재</label><select id="cur"></select></div>
         <div class="arrow">→</div>
-        <div><label for="tgt">목표</label><input type="text" id="tgt" placeholder="1.36" list="k8s-versions"></div>
+        <div><label for="tgt">목표</label><select id="tgt"></select></div>
       </div>
+      <div class="ver-note" id="ver-source"></div>
 
-      <h2>2. 사용 중인 add-on</h2>
-      <p class="hint">입력한 add-on 만 분석합니다. 버전 확인: <code>aws eks describe-addon --cluster-name &lt;이름&gt; --addon-name vpc-cni</code></p>
-      <div class="grid-addon cols-head"><span>이름</span><span>현재 버전</span><span>목표 (선택)</span><span></span></div>
+      <h2>2. 사용 중인 add-on / 컨트롤러</h2>
+      <p class="hint">추가한 항목만 분석합니다. 설치 방식(EKS 관리형 add-on / Helm)을 고르고, 버전 칸을 클릭하면 선택 가능한 버전 목록이 나옵니다.</p>
       <div id="addons"></div>
       <button type="button" class="link" id="add-addon">+ add-on 추가</button>
 
       <h2>3. 노드그룹 (선택)</h2>
-      <p class="hint">AMI 타입(AL2 지원 종료)과 kubelet 버전 차이를 점검합니다.</p>
-      <div class="grid-ng cols-head"><span>이름</span><span>버전</span><span>AMI 타입</span><span></span></div>
+      <p class="hint">AMI 타입(AL2 지원 종료), kubelet 버전 차이를 점검하고, 현재/목표 버전의 <b>권장 AMI ID</b>(조회 시점 기준)를 AWS CLI 로 조회합니다. Launch Template 으로 관리한다면 사용 중인 AMI ID 를 넣어 비교할 수 있습니다.</p>
       <div id="nodegroups"></div>
       <button type="button" class="link" id="add-ng">+ 노드그룹 추가</button>
 
@@ -152,14 +157,7 @@
   </section>
 </main>
 
-<datalist id="k8s-versions"></datalist>
-<datalist id="ami-types">
-  <option value="AL2023_x86_64_STANDARD"><option value="AL2023_ARM_64_STANDARD">
-  <option value="AL2023_x86_64_NVIDIA"><option value="AL2023_x86_64_NEURON">
-  <option value="BOTTLEROCKET_x86_64"><option value="BOTTLEROCKET_ARM_64">
-  <option value="AL2_x86_64"><option value="AL2_ARM_64"><option value="AL2_x86_64_GPU">
-  <option value="WINDOWS_CORE_2022_x86_64"><option value="WINDOWS_FULL_2022_x86_64">
-</datalist>
+
 
 <script>
 (() => {
@@ -181,47 +179,137 @@
   };
   const input = (cls, value, placeholder, list) =>
     el("input", { type: "text", class: cls, value: value ?? "", placeholder, list });
+  const field = (label, control) => el("label", { class: "f" }, el("span", {}, label), control);
 
-  for (let m = 25; m <= 40; m++) $("k8s-versions").append(el("option", { value: `1.${m}` }));
+  const STATUS_LABEL = { standard: "standard", extended: "extended 지원", ended: "지원 종료", unverified: "지원 확인 필요" };
+  const INSTALL_LABEL = { "eks-addon": "EKS 관리형 add-on", helm: "Helm / 직접 설치" };
+  let k8sVersions = [];      // [{minor, status}] 최신순
+  let pendingCluster = null; // 버전 목록 로딩 전에 채울 값
+  let amiTypes = [];
+  let seq = 0;
 
-  // ---- add-on rows ----
-  function addonRow(data = {}) {
-    const known = data.name && components[data.name];
-    const sel = el("select", { class: "a-name", "aria-label": "add-on 이름" });
-    sel.append(el("option", { value: "" }, "선택…"));
-    for (const name of Object.keys(components)) sel.append(el("option", { value: name }, name));
-    sel.append(el("option", { value: CUSTOM }, "기타 (직접 입력)"));
-    sel.value = data.name ? (known ? data.name : CUSTOM) : "";
+  const minorNum = (m) => { const [a, b] = String(m).split("."); return Number(a) * 1000 + Number(b); };
 
-    const custom = el("div", { class: "custom" },
-      input("a-custom-name", known ? "" : data.name, "이름 (예: cert-manager)"),
-      input("a-repo", data.repo, "GitHub repo (owner/name)"));
-    custom.hidden = sel.value !== CUSTOM;
-    sel.addEventListener("change", () => { custom.hidden = sel.value !== CUSTOM; });
-
-    const row = el("div", { class: "grid-addon" },
-      sel, input("a-cur", data.current, "v1.18.3-eksbuild.1"), input("a-tgt", data.target, "최신"),
-      el("button", { type: "button", class: "icon", title: "삭제", onclick: () => row.remove() }, "✕"),
-      custom);
-    $("addons").append(row);
+  function fillSelect(sel, items, value, emptyLabel) {
+    sel.replaceChildren(el("option", { value: "" }, emptyLabel));
+    for (const it of items) sel.append(el("option", { value: it.minor }, `${it.minor}  (${STATUS_LABEL[it.status] || it.status})`));
+    if (value && !items.some((it) => it.minor === value)) sel.append(el("option", { value }, `${value}  (목록에 없음)`));
+    sel.value = value || "";
   }
 
+  function refreshClusterSelects(cur, tgt) {
+    cur = cur ?? $("cur").value; tgt = tgt ?? $("tgt").value;
+    fillSelect($("cur"), k8sVersions, cur, "현재 버전 선택");
+    const higher = k8sVersions.filter((v) => !cur || minorNum(v.minor) > minorNum(cur)).filter((v) => v.status !== "ended");
+    if (tgt && cur && minorNum(tgt) <= minorNum(cur)) tgt = "";
+    if (!tgt && cur) tgt = higher.length ? higher[higher.length - 1].minor : "";  // 기본: 바로 다음 버전
+    fillSelect($("tgt"), higher, tgt, "목표 버전 선택");
+    for (const s of document.querySelectorAll("#nodegroups .n-ver")) fillSelect(s, k8sVersions, s.value || cur, "버전");
+  }
+
+  async function loadVersions() {
+    const note = $("ver-source");
+    note.textContent = "EKS 지원 버전 목록 불러오는 중…";
+    const qs = new URLSearchParams({ profile: $("aws-profile").value.trim(), region: $("aws-region").value.trim() });
+    try {
+      const res = await fetch(`/api/versions?${qs}`);
+      const data = await res.json();
+      k8sVersions = data.versions || [];
+      note.textContent = `버전 목록 출처: ${data.source}` + (data.errors?.length ? ` · ${data.errors.join("; ")}` : "");
+    } catch (e) {
+      note.textContent = `버전 목록을 불러오지 못했습니다: ${e}`;
+    }
+    const p = pendingCluster; pendingCluster = null;
+    refreshClusterSelects(p?.current, p?.target);
+  }
+
+  // ---- add-on cards ----
+  function addonRow(data = {}) {
+    const id = ++seq;
+    const known = data.name && components[data.name];
+    const sel = el("select", { class: "a-name", "aria-label": "구성요소" });
+    sel.append(el("option", { value: "" }, "구성요소 선택…"));
+    const gEks = el("optgroup", { label: "EKS 관리형 add-on 으로도 설치 가능" });
+    const gHelm = el("optgroup", { label: "Helm / 직접 설치" });
+    for (const [name, c] of Object.entries(components)) (c.eks_addon ? gEks : gHelm).append(el("option", { value: name }, c.title || name));
+    sel.append(gEks, gHelm, el("option", { value: CUSTOM }, "기타 (GitHub 레포 직접 입력)"));
+    sel.value = data.name ? (known ? data.name : CUSTOM) : "";
+
+    const inst = el("select", { class: "a-install", "aria-label": "설치 방식" });
+    const custom = el("div", { class: "line two" },
+      field("이름", input("a-custom-name", known ? "" : data.name, "예: my-operator")),
+      field("GitHub 레포", input("a-repo", data.repo, "owner/name")));
+    const dlCur = el("datalist", { id: `dl-cur-${id}` }), dlTgt = el("datalist", { id: `dl-tgt-${id}` });
+    const cur = input("a-cur", data.current, "목록에서 선택 또는 입력", dlCur.id);
+    const tgt = input("a-tgt", data.target, "비우면 최신 / 기본 버전", dlTgt.id);
+    const hint = el("div", { class: "item-hint" });
+
+    function syncInstall(keep) {
+      const name = sel.value, c = components[name];
+      const opts = c?.eks_addon ? ["eks-addon", "helm"] : ["helm"];
+      const prev = keep ?? inst.value;
+      inst.replaceChildren(...opts.map((o) => el("option", { value: o }, INSTALL_LABEL[o])));
+      inst.value = opts.includes(prev) ? prev : opts[0];
+      inst.disabled = !name;
+      custom.hidden = name !== CUSTOM;
+      dlCur.replaceChildren(); dlTgt.replaceChildren(); delete cur.dataset.loaded; delete tgt.dataset.loaded;
+      hint.textContent = !name ? "" : inst.value === "helm"
+        ? "Helm 은 `helm list -A` 의 APP VERSION 을 입력하세요 (CHART 버전과 다를 수 있음)."
+        : "`aws eks describe-addon --cluster-name <이름> --addon-name " + (c?.eks_addon || name) + "` 의 addonVersion";
+    }
+    async function suggest(inputEl, dl, k8s) {
+      const name = sel.value;
+      if (!name || name === CUSTOM || inputEl.dataset.loaded === `${name}|${inst.value}|${k8s}`) return;
+      inputEl.dataset.loaded = `${name}|${inst.value}|${k8s}`;
+      const qs = new URLSearchParams({ name, install: inst.value, k8s: k8s || "",
+                                       profile: $("aws-profile").value.trim(), region: $("aws-region").value.trim() });
+      try {
+        const data = await (await fetch(`/api/component-versions?${qs}`)).json();
+        dl.replaceChildren(...(data.versions || []).map((v) => el("option", { value: v }, v === data.default ? "EKS 기본 버전" : "")));
+        if (inputEl === tgt && data.default && !tgt.value) tgt.placeholder = `비우면 최신 (EKS 기본: ${data.default})`;
+        hint.dataset.source = data.source || data.error || "";
+        if (data.source || data.error) hint.title = `버전 목록: ${data.source || data.error}`;
+      } catch (e) { delete inputEl.dataset.loaded; }
+    }
+    sel.addEventListener("change", () => syncInstall());
+    inst.addEventListener("change", () => syncInstall(inst.value));
+    cur.addEventListener("focus", () => suggest(cur, dlCur, $("cur").value));
+    tgt.addEventListener("focus", () => suggest(tgt, dlTgt, $("tgt").value));
+
+    const row = el("div", { class: "item addon" },
+      el("div", { class: "line l1" }, field("구성요소", sel), field("설치 방식", inst),
+        el("button", { type: "button", class: "icon", title: "삭제", onclick: () => row.remove() }, "✕")),
+      custom,
+      el("div", { class: "line two" }, field("현재 버전", cur), field("목표 버전 (선택)", tgt)),
+      hint, dlCur, dlTgt);
+    $("addons").append(row);
+    syncInstall(data.install);
+  }
+
+  // ---- node group cards ----
   function ngRow(data = {}) {
-    const row = el("div", { class: "grid-ng" },
-      input("n-name", data.name, "app"), input("n-ver", data.version, "1.35", "k8s-versions"),
-      input("n-ami", data.ami_type, "AL2023_x86_64_STANDARD", "ami-types"),
-      el("button", { type: "button", class: "icon", title: "삭제", onclick: () => row.remove() }, "✕"));
+    const ver = el("select", { class: "n-ver", "aria-label": "노드그룹 버전" });
+    fillSelect(ver, k8sVersions, data.version || $("cur").value, "버전");
+    const ami = el("select", { class: "n-ami", "aria-label": "AMI 타입" });
+    ami.append(el("option", { value: "" }, "AMI 타입 선택…"));
+    for (const t of amiTypes) ami.append(el("option", { value: t }, t));
+    if (data.ami_type && !amiTypes.includes(data.ami_type)) ami.append(el("option", { value: data.ami_type }, data.ami_type));
+    ami.value = data.ami_type || "";
+    const row = el("div", { class: "item ng" },
+      el("div", { class: "line l1" }, field("이름", input("n-name", data.name, "app")), field("버전", ver),
+        el("button", { type: "button", class: "icon", title: "삭제", onclick: () => row.remove() }, "✕")),
+      el("div", { class: "line two" }, field("AMI 타입", ami),
+        field("사용 중 AMI ID (선택)", input("n-ami-id", data.ami_id, "ami-0123…"))));
     $("nodegroups").append(row);
   }
 
   // ---- form <-> data ----
   function collect() {
-    const data = { cluster: { current: $("cur").value.trim(), target: $("tgt").value.trim() }, addons: {}, nodegroups: [] };
+    const data = { cluster: { current: $("cur").value, target: $("tgt").value }, addons: {}, nodegroups: [] };
     for (const row of $("addons").children) {
       let name = row.querySelector(".a-name").value;
-      const cur = row.querySelector(".a-cur").value.trim();
-      const tgt = row.querySelector(".a-tgt").value.trim();
-      const entry = { current: cur, target: tgt };
+      const entry = { current: row.querySelector(".a-cur").value.trim(), target: row.querySelector(".a-tgt").value.trim(),
+                      install: row.querySelector(".a-install").value };
       if (name === CUSTOM) {
         name = row.querySelector(".a-custom-name").value.trim();
         entry.repo = row.querySelector(".a-repo").value.trim();
@@ -229,9 +317,9 @@
       if (name) data.addons[name] = entry;
     }
     for (const row of $("nodegroups").children) {
-      const ng = { name: row.querySelector(".n-name").value.trim(), version: row.querySelector(".n-ver").value.trim(),
-                   ami_type: row.querySelector(".n-ami").value.trim() };
-      if (ng.name || ng.version || ng.ami_type) data.nodegroups.push(ng);
+      const ng = { name: row.querySelector(".n-name").value.trim(), version: row.querySelector(".n-ver").value,
+                   ami_type: row.querySelector(".n-ami").value, ami_id: row.querySelector(".n-ami-id").value.trim() };
+      if (ng.name || ng.ami_type || ng.ami_id) data.nodegroups.push(ng);
     }
     const profile = $("aws-profile").value.trim(), region = $("aws-region").value.trim();
     if (profile || region) data.aws = { profile, region };
@@ -240,37 +328,42 @@
   }
 
   function fill(data) {
-    $("cur").value = data?.cluster?.current ?? "";
-    $("tgt").value = data?.cluster?.target ?? "";
+    $("aws-profile").value = data?.aws?.profile ?? "";
+    $("aws-region").value = data?.aws?.region ?? "";
+    if (k8sVersions.length) refreshClusterSelects(data?.cluster?.current ?? "", data?.cluster?.target ?? "");
+    else pendingCluster = data?.cluster ?? null;
     $("addons").replaceChildren();
     $("nodegroups").replaceChildren();
     const addons = data?.addons ?? {};
     for (const [name, v] of Object.entries(addons)) {
       const entry = (v && typeof v === "object") ? v : { current: v };
-      addonRow({ name, current: entry.current, target: entry.target, repo: entry.repo });
+      addonRow({ name, current: entry.current, target: entry.target, repo: entry.repo, install: entry.install });
     }
     if (!Object.keys(addons).length) ["vpc-cni", "coredns", "kube-proxy"].forEach((name) => addonRow({ name }));
     for (const ng of data?.nodegroups ?? []) ngRow(ng);
-    $("aws-profile").value = data?.aws?.profile ?? "";
-    $("aws-region").value = data?.aws?.region ?? "";
     const o = data?.options ?? {};
     $("opt-issues").checked = !o.no_issues; $("opt-aws").checked = !o.no_aws; $("opt-cache").checked = !o.no_cache;
   }
 
   function validate(data) {
     const errors = [];
-    const ver = /^v?\d+\.\d+$/;
-    for (const [id, label] of [["cur", "현재 버전"], ["tgt", "목표 버전"]]) {
-      const ok = ver.test($(id).value.trim());
-      $(id).classList.toggle("invalid", !ok);
-      if (!ok) errors.push(`${label}을(를) 1.35 형식으로 입력하세요.`);
-    }
+    const cur = $("cur").value, tgt = $("tgt").value;
+    $("cur").classList.toggle("invalid", !cur);
+    $("tgt").classList.toggle("invalid", !tgt);
+    if (!cur || !tgt) errors.push("현재 / 목표 클러스터 버전을 선택하세요.");
+    else if (minorNum(tgt) <= minorNum(cur)) errors.push("목표 버전은 현재 버전보다 높아야 합니다.");
     for (const row of $("addons").children) {
       const named = row.querySelector(".a-name").value;
-      const cur = row.querySelector(".a-cur");
-      const bad = named && !cur.value.trim();
-      cur.classList.toggle("invalid", !!bad);
-      if (bad) errors.push(`add-on 의 현재 버전이 비어 있습니다.`);
+      const c = row.querySelector(".a-cur");
+      const bad = named && !c.value.trim();
+      c.classList.toggle("invalid", !!bad);
+      if (bad) errors.push("add-on 의 현재 버전이 비어 있습니다.");
+    }
+    for (const row of $("nodegroups").children) {
+      const ver = row.querySelector(".n-ver");
+      const bad = !ver.value && (row.querySelector(".n-name").value || row.querySelector(".n-ami").value);
+      ver.classList.toggle("invalid", !!bad);
+      if (bad) errors.push("노드그룹 버전을 선택하세요.");
     }
     return [...new Set(errors)];
   }
@@ -360,18 +453,22 @@
   });
 
   $("add-addon").addEventListener("click", () => addonRow());
-  $("add-ng").addEventListener("click", () => ngRow());
+  $("add-ng").addEventListener("click", () => ngRow({ ami_type: "AL2023_x86_64_STANDARD" }));
 
   // ---- init ----
   (async () => {
     const res = await fetch("/api/init");
     const init = await res.json();
     components = init.components;
+    amiTypes = init.ami_types || [];
     $("ver").textContent = `v${init.version}`;
     const badge = $("token-badge");
     badge.textContent = init.github_token ? "GitHub 토큰 사용" : "GitHub 토큰 없음 (시간당 60회 제한)";
     badge.classList.toggle("ok", init.github_token);
     fill(load() ?? init.env ?? {});
+    loadVersions();
+    for (const id of ["aws-profile", "aws-region"]) $(id).addEventListener("change", loadVersions);
+    $("cur").addEventListener("change", () => refreshClusterSelects($("cur").value, $("tgt").value));
     if (init.env_error) { $("form-error").hidden = false; $("form-error").textContent = `env.yaml 을 읽지 못했습니다: ${init.env_error}`; }
     await refreshHistory();
   })().catch((err) => { $("form-error").hidden = false; $("form-error").textContent = `초기화 실패: ${err}`; });

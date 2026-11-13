@@ -7,7 +7,11 @@ cluster:
   target: "1.33"    # 목표 버전
 
 # 사용 중인 add-on / 컨트롤러와 현재 버전. 여기 적은 것만 분석합니다.
-# 기본 지원: vpc-cni, coredns, kube-proxy, ebs-csi, aws-load-balancer-controller, karpenter
+# EKS 관리형 add-on 가능: vpc-cni, coredns, kube-proxy, ebs-csi, efs-csi, eks-pod-identity-agent
+# Helm / 직접 설치: aws-load-balancer-controller, karpenter, cluster-autoscaler, metrics-server, cert-manager,
+#                  external-dns, external-secrets, ingress-nginx, argo-cd, istio, aws-node-termination-handler, velero
+# install 을 생략하면 EKS 관리형 add-on 이 가능한 것은 eks-addon, 나머지는 helm 으로 봅니다.
+# Helm 설치는 `helm list -A` 의 APP VERSION 을 적습니다 (CHART 버전과 다를 수 있음).
 # 버전 확인:  aws eks list-addons --cluster-name <이름>
 #            aws eks describe-addon --cluster-name <이름> --addon-name vpc-cni --query addon.addonVersion
 addons:
@@ -20,6 +24,11 @@ addons:
   #   current: "v2.8.1"
   #   target: "v2.11.0"
 
+  # EKS 관리형 add-on 이 가능한 컴포넌트를 Helm 으로 설치했다면 install: helm
+  # coredns:
+  #   current: "1.11.3"
+  #   install: helm
+
   # 기본 목록에 없는 컴포넌트는 GitHub 레포를 함께 적습니다.
   # cert-manager:
   #   current: "v1.14.4"
@@ -31,9 +40,12 @@ addons:
 #   profile: default
 #   region: ap-northeast-2
 
-# (선택) 노드그룹 정보. 적으면 AMI 타입(AL2 지원 종료)과 kubelet 버전 차이(skew)를 점검합니다.
+# (선택) 노드그룹 정보. 적으면 AMI 타입(AL2 지원 종료)과 kubelet 버전 차이(skew)를 점검하고,
+# AWS CLI 가 있으면 현재/목표 버전의 권장 EKS 최적화 AMI ID 를 SSM 공개 파라미터로 조회합니다.
+# ami_id 는 Launch Template 에 지정한 현재 AMI 로, 적으면 권장 AMI 와 비교합니다 (선택).
 # 확인:  aws eks describe-nodegroup --cluster-name <이름> --nodegroup-name <ng> --query "nodegroup.[version,amiType]"
 nodegroups:
   # - name: app
   #   version: "1.31"
-  #   ami_type: AL2_x86_64
+  #   ami_type: AL2023_x86_64_STANDARD
+  #   ami_id: ami-0123456789abcdef0

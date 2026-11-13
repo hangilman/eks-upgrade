@@ -1,36 +1,112 @@
 # 추적할 컴포넌트 정의.
 # 새 컴포넌트는 여기에 추가하거나, 같은 형식의 파일을 --config 로 지정하세요.
 #
-#   repo:         GitHub Release 를 수집할 레포 (owner/name). 없으면 Release 분석 생략
-#   eks_addon:    EKS managed add-on 이름 (--cluster 모드에서 버전/호환성 조회)
-#   image_match:  self-managed 설치일 때 kubectl 로 이미지 태그를 찾기 위한 문자열
-#   tag_pattern:  버전 태그로 인정할 정규식 (기본: ^v?X.Y.Z$). helm-chart-* 같은 태그 제외용
-#   bug_label:    이슈 검색에 사용할 버그 라벨
+#   repo:              GitHub Release 를 수집할 레포 (owner/name). 없으면 Release 분석 생략
+#   eks_addon:         EKS 관리형 add-on 이름. 있으면 'EKS add-on' 설치 방식을 선택할 수 있음
+#                      (없으면 Helm / 직접 설치 전용)
+#   image_match:       cluster 모드에서 kubectl 로 이미지 태그를 찾기 위한 문자열
+#   tag_pattern:       버전 태그로 인정할 정규식 (기본: ^v?X.Y.Z$). helm-chart-* 같은 태그 제외용
+#   tag_prefix:        태그 앞에 붙는 접두어 (예: ingress-nginx 의 'controller-')
+#   follows_k8s_minor: true 면 Kubernetes 마이너 버전과 맞춰 써야 하는 컴포넌트 (예: cluster-autoscaler)
+#   bug_label:         이슈 검색에 사용할 버그 라벨
+#   title:             화면에 표시할 이름
+
 components:
+  # ---- EKS 관리형 add-on 으로도 설치 가능 ----
   vpc-cni:
+    title: Amazon VPC CNI
     repo: aws/amazon-vpc-cni-k8s
     eks_addon: vpc-cni
     image_match: "amazon-k8s-cni:"
     bug_label: bug
   coredns:
+    title: CoreDNS
     repo: coredns/coredns
     eks_addon: coredns
     image_match: "/coredns:"
     bug_label: bug
   kube-proxy:
     # kube-proxy 는 Kubernetes 본체와 함께 릴리스되므로 Release 분석은 Kubernetes CHANGELOG 로 대신함
+    title: kube-proxy
     eks_addon: kube-proxy
     image_match: "/kube-proxy:"
   ebs-csi:
+    title: Amazon EBS CSI Driver
     repo: kubernetes-sigs/aws-ebs-csi-driver
     eks_addon: aws-ebs-csi-driver
     image_match: "aws-ebs-csi-driver:"
     bug_label: kind/bug
+  efs-csi:
+    title: Amazon EFS CSI Driver
+    repo: kubernetes-sigs/aws-efs-csi-driver
+    eks_addon: aws-efs-csi-driver
+    image_match: "aws-efs-csi-driver:"
+    bug_label: kind/bug
+  eks-pod-identity-agent:
+    title: EKS Pod Identity Agent
+    eks_addon: eks-pod-identity-agent
+    image_match: "eks-pod-identity-agent:"
+
+  # ---- Helm / 직접 설치 ----
   aws-load-balancer-controller:
+    title: AWS Load Balancer Controller
     repo: kubernetes-sigs/aws-load-balancer-controller
     image_match: "aws-load-balancer-controller:"
     bug_label: kind/bug
   karpenter:
+    title: Karpenter
     repo: aws/karpenter-provider-aws
     image_match: "karpenter/controller:"
     bug_label: bug
+  cluster-autoscaler:
+    title: Cluster Autoscaler
+    repo: kubernetes/autoscaler
+    tag_prefix: "cluster-autoscaler-"
+    follows_k8s_minor: true
+    image_match: "cluster-autoscaler:"
+    bug_label: kind/bug
+  metrics-server:
+    title: Metrics Server
+    repo: kubernetes-sigs/metrics-server
+    image_match: "metrics-server:"
+    bug_label: kind/bug
+  cert-manager:
+    title: cert-manager
+    repo: cert-manager/cert-manager
+    image_match: "cert-manager-controller:"
+    bug_label: kind/bug
+  external-dns:
+    title: ExternalDNS
+    repo: kubernetes-sigs/external-dns
+    image_match: "external-dns:"
+    bug_label: kind/bug
+  external-secrets:
+    title: External Secrets Operator
+    repo: external-secrets/external-secrets
+    image_match: "external-secrets:"
+    bug_label: kind/bug
+  ingress-nginx:
+    title: ingress-nginx
+    repo: kubernetes/ingress-nginx
+    tag_prefix: "controller-"
+    image_match: "ingress-nginx/controller:"
+    bug_label: kind/bug
+  argo-cd:
+    title: Argo CD
+    repo: argoproj/argo-cd
+    image_match: "argocd:"
+    bug_label: bug
+  istio:
+    title: Istio
+    repo: istio/istio
+    image_match: "istio/pilot:"
+  aws-node-termination-handler:
+    title: AWS Node Termination Handler
+    repo: aws/aws-node-termination-handler
+    image_match: "aws-node-termination-handler:"
+    bug_label: "Type: Bug"
+  velero:
+    title: Velero
+    repo: vmware-tanzu/velero
+    image_match: "velero/velero:"
+    bug_label: Bug

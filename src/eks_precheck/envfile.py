@@ -17,6 +17,10 @@ class InputError(ValueError):
     pass
 
 
+INSTALL_EKS = "eks-addon"
+INSTALL_HELM = "helm"
+
+
 @dataclass
 class EnvInput:
     current: str
@@ -83,12 +87,21 @@ def from_dict(data: dict, known: dict[str, dict]) -> EnvInput:
     for name, value in (data.get("addons") or {}).items():
         where = f"addons.{name}"
         spec = dict(known.get(name, {}))
+        install = None
         if isinstance(value, dict):
-            current, target = value.get("current"), value.get("target")
-            spec.update({k: v for k, v in value.items() if k not in ("current", "target") and v not in (None, "")})
+            current, target, install = value.get("current"), value.get("target"), value.get("install")
+            spec.update({k: v for k, v in value.items()
+                         if k not in ("current", "target", "install") and v not in (None, "")})
         else:
             current, target = value, None
-        if not spec.get("repo") and not spec.get("eks_addon"):
+        if install not in (None, "", INSTALL_EKS, INSTALL_HELM):
+            raise InputError(f"{where}.install: {INSTALL_EKS} 또는 {INSTALL_HELM} 중 하나여야 합니다.")
+        if install == INSTALL_EKS and not spec.get("eks_addon"):
+            raise InputError(f"{where}: EKS 관리형 add-on 으로 제공되지 않는 컴포넌트입니다. install: {INSTALL_HELM} 으로 지정하세요.")
+        spec["install"] = install or (INSTALL_EKS if spec.get("eks_addon") else INSTALL_HELM)
+        if spec["install"] == INSTALL_HELM:
+            spec.pop("eks_addon", None)  # Helm 설치면 EKS add-on 호환성 조회 대상이 아님
+        if not spec.get("repo") and not spec.get("eks_addon") and name not in known:
             raise InputError(
                 f"{where}: 알 수 없는 컴포넌트입니다. repo: owner/name 을 함께 적어 주세요. "
                 f"(기본 지원: {', '.join(known)})"
@@ -113,6 +126,7 @@ def from_dict(data: dict, known: dict[str, dict]) -> EnvInput:
                 name=str(ng.get("name") or f"nodegroup-{i + 1}"),
                 version=_minor(ng.get("version"), f"{where}.version"),
                 ami_type=str(ng.get("ami_type") or ""),
+                ami_id=str(ng.get("ami_id") or "").strip(),
             )
         )
     return env
