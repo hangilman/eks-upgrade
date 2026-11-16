@@ -9,6 +9,8 @@
 #   tag_prefix:        태그 앞에 붙는 접두어 (예: ingress-nginx 의 'controller-')
 #   follows_k8s_minor: true 면 Kubernetes 마이너 버전과 맞춰 써야 하는 컴포넌트 (예: cluster-autoscaler)
 #   bug_label:         이슈 검색에 사용할 버그 라벨
+#   version_repo:      (웹 UI) 버전 목록만 가져올 레포. repo 가 없을 때 사용
+#   versions_match_k8s_minor: (웹 UI) 버전 목록을 선택한 Kubernetes 마이너 버전으로 제한
 #   title:             화면에 표시할 이름
 
 components:
@@ -30,6 +32,9 @@ components:
     title: kube-proxy
     eks_addon: kube-proxy
     image_match: "/kube-proxy:"
+    # 버전 목록: AWS CLI 를 못 쓸 때 Kubernetes 패치 버전(같은 마이너)을 대신 보여 줌
+    version_repo: kubernetes/kubernetes
+    versions_match_k8s_minor: true
   ebs-csi:
     title: Amazon EBS CSI Driver
     repo: kubernetes-sigs/aws-ebs-csi-driver

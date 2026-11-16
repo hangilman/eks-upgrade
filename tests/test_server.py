@@ -151,3 +151,38 @@ def test_page_has_tabs(ui):
     html = s.get(base + "/").text
     for anchor in ('href="#/input"', 'href="#/report"', 'href="#/history"', 'id="toc"', "function buildPages"):
         assert anchor in html
+
+
+def test_kube_proxy_falls_back_to_upstream_patch_versions(tmp_path, fixture_text, fake_http, monkeypatch):
+    from test_precheck import _rel, _routes
+
+    from eks_precheck import server as srv
+    from eks_precheck.sources.awscli import AwsCliError
+
+    def fail(*a, **k):
+        raise AwsCliError("AWS CLI 오류: You must specify a region.")
+    monkeypatch.setattr(srv, "run_json", fail)
+    routes = _routes(fixture_text)
+    routes["https://api.github.com/repos/kubernetes/kubernetes/releases"] = [
+        _rel("v1.35.1"), _rel("v1.34.3"), _rel("v1.34.2"), _rel("v1.34.3-rc.0", prerelease=True), _rel("v1.33.7")]
+    app = server.App(tmp_path, http_factory=lambda no_cache: fake_http(routes))
+    data = app.component_versions("kube-proxy", "eks-addon", "1.34", None, None)
+    assert data["versions"] == ["v1.34.3", "v1.34.2"]  # 선택한 마이너만
+    assert "업스트림 패치 버전" in data["source"] and "region" in data["source"]
+
+
+def test_awscli_disables_pager_and_explains_region(monkeypatch):
+    import subprocess
+
+    from eks_precheck.sources import awscli
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(cmd, 255, stdout="", stderr="You must specify a region. You can also configure your region by running \"aws configure\".")
+    monkeypatch.setattr(awscli.shutil, "which", lambda n: "aws")
+    monkeypatch.setattr(awscli.subprocess, "run", fake_run)
+    with pytest.raises(awscli.AwsCliError, match="AWS region 을 입력"):
+        awscli.run_json(["eks", "describe-addon-versions"])
+    assert seen["env"]["AWS_PAGER"] == ""

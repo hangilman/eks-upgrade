@@ -62,8 +62,6 @@
   .line.two { grid-template-columns: 1fr 1fr; }
   .line > * { min-width: 0; }
   label.f span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
-  .item-hint, .ver-note { font-size: 11.5px; color: var(--muted); }
-  .ver-note { margin-top: 6px; }
   select:disabled { opacity: .6; }
   .combo { position: relative; }
   .combo input { padding-right: 30px; }
@@ -158,6 +156,30 @@
   .report-body th { background: var(--code-bg); }
   .report-body tr:hover td { background: var(--row-hover); }
 
+  /* troubleshooting */
+  #ts-search { margin-bottom: 8px; }
+  #ts-nav a .lbl { white-space: normal; }
+  .ts .muted, .ts .goal { color: var(--muted); margin: 4px 0 12px; }
+  .ts .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 18px; }
+  .ts .flow a { border: 1px solid var(--border); border-radius: 16px; padding: 4px 12px; text-decoration: none; color: var(--text); font-size: 13px; }
+  .ts .flow a:hover { border-color: var(--accent); color: var(--accent); }
+  .ts .flow span { color: var(--muted); }
+  .ts .phase { border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+  .ts .phase h3 { margin: 0; }
+  .ts .phase h4, .ts > h4 { margin: 14px 0 6px; font-size: 13.5px; }
+  .ts .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ts .chips a { background: var(--accent-soft); color: var(--accent); border-radius: 12px; padding: 3px 10px; font-size: 12.5px; text-decoration: none; }
+  .ts .rollback { margin: 0; }
+  .ts .crumb { font-size: 12.5px; margin-bottom: 4px; }
+  .cmds { display: grid; gap: 4px; min-width: 0; }
+  .cmd { display: flex; align-items: flex-start; gap: 6px; background: var(--code-bg); border-radius: 6px; padding: 6px 6px 6px 10px; }
+  .cmd code { flex: 1; min-width: 0; background: none !important; padding: 0 !important; white-space: pre-wrap; overflow-wrap: anywhere;
+              font: 12.5px/1.5 ui-monospace, Consolas, monospace; }
+  .cmd .copy { padding: 1px 8px; font-size: 11.5px; flex: none; }
+  .cause { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px; padding: 10px 12px; margin: 8px 0; display: grid; gap: 8px; }
+  .cause-title { font-weight: 600; }
+  .cause .row { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; align-items: start; }
+  .cause .row b { font-size: 12px; color: var(--muted); padding-top: 3px; }
   @media print {
     header, aside.toc, .report-head, .pager, .index-cards { display: none !important; }
     .view { padding: 0; }
@@ -175,6 +197,7 @@
     <a href="#/input" data-tab="input">입력</a>
     <a href="#/report" data-tab="report" id="tab-report">리포트</a>
     <a href="#/history" data-tab="history">기록</a>
+    <a href="#/troubleshoot" data-tab="troubleshoot">트러블슈팅</a>
   </nav>
   <span class="spacer"></span>
   <span class="badge" id="token-badge" title="GitHub API 호출 한도">GitHub 토큰 확인 중</span>
@@ -189,15 +212,12 @@
       <div class="arrow">→</div>
       <div><label for="tgt">목표</label><select id="tgt"></select></div>
     </div>
-    <div class="ver-note" id="ver-source"></div>
 
     <h2>2. 사용 중인 add-on / 컨트롤러</h2>
-    <p class="hint">추가한 항목만 분석합니다. 설치 방식(EKS 관리형 add-on / Helm)을 고르고, 버전 칸의 ▾ 를 누르면 입력된 값과 관계없이 전체 버전 목록이 나오고, 글자를 입력하면 포함된 버전으로 걸러집니다.</p>
     <div id="addons" class="cards"></div>
     <button type="button" class="link" id="add-addon">+ add-on 추가</button>
 
     <h2>3. 노드그룹 (선택)</h2>
-    <p class="hint">AMI 타입(AL2 지원 종료), kubelet 버전 차이를 점검하고, 현재/목표 버전의 <b>권장 AMI ID</b>(조회 시점 기준)를 AWS CLI 로 조회합니다. Launch Template 으로 관리한다면 사용 중인 AMI ID 를 넣어 비교할 수 있습니다.</p>
     <div id="nodegroups" class="cards"></div>
     <button type="button" class="link" id="add-ng">+ 노드그룹 추가</button>
 
@@ -216,7 +236,6 @@
 
     <div class="actions">
       <button type="submit" class="primary" id="run">리포트 생성</button>
-      <span class="hint" id="run-hint">생성이 끝나면 리포트 탭으로 이동합니다.</span>
     </div>
     <div id="form-error" class="error" hidden></div>
     <div id="progress" hidden>
@@ -246,11 +265,21 @@
   </div>
 </section>
 
+<!-- 트러블슈팅 -->
+<section class="view" id="view-troubleshoot" hidden>
+  <div class="report-layout">
+    <aside class="panel toc" aria-label="트러블슈팅 항목">
+      <input type="text" id="ts-search" placeholder="증상 검색 (예: ImagePull, OOM, NotReady)">
+      <nav id="ts-nav"></nav>
+    </aside>
+    <div class="panel"><article class="report-body ts" id="ts-body"></article></div>
+  </div>
+</section>
+
 <!-- 기록 -->
 <section class="view" id="view-history" hidden>
   <div class="panel narrow">
     <h2>지난 리포트</h2>
-    <p class="hint">reports 폴더에 저장된 리포트입니다. 클릭하면 리포트 탭에서 엽니다.</p>
     <div id="history-list"></div>
   </div>
 </section>
@@ -303,16 +332,14 @@
   }
 
   async function loadVersions() {
-    const note = $("ver-source");
-    note.textContent = "EKS 지원 버전 목록 불러오는 중…";
+    for (const id of ["cur", "tgt"]) if (!k8sVersions.length) $(id).replaceChildren(el("option", { value: "" }, "버전 목록 불러오는 중…"));
     const qs = new URLSearchParams({ profile: $("aws-profile").value.trim(), region: $("aws-region").value.trim() });
     try {
       const res = await fetch(`/api/versions?${qs}`);
       const data = await res.json();
       k8sVersions = data.versions || [];
-      note.textContent = `버전 목록 출처: ${data.source}` + (data.errors?.length ? ` · ${data.errors.join("; ")}` : "");
     } catch (e) {
-      note.textContent = `버전 목록을 불러오지 못했습니다: ${e}`;
+      k8sVersions = [];
     }
     const p = pendingCluster; pendingCluster = null;
     refreshClusterSelects(p?.current, p?.target);
@@ -416,7 +443,6 @@
     const tgtBox = combo("a-tgt", data.target, "비우면 최신 / 기본 버전", loaderFor(() => $("tgt").value, (r) => {
       tgtBox.input.placeholder = r.default ? `비우면 최신 (EKS 기본: ${r.default})` : "비우면 최신 / 기본 버전";
     }));
-    const hint = el("div", { class: "item-hint" });
 
     function syncInstall(keep) {
       const name = sel.value, c = components[name];
@@ -426,9 +452,9 @@
       inst.value = opts.includes(prev) ? prev : opts[0];
       inst.disabled = !name;
       custom.hidden = name !== CUSTOM;
-      hint.textContent = !name ? "" : inst.value === "helm"
-        ? "Helm 은 `helm list -A` 의 APP VERSION 을 입력하세요 (CHART 버전과 다를 수 있음)."
-        : "`aws eks describe-addon --cluster-name <이름> --addon-name " + (c?.eks_addon || name) + "` 의 addonVersion";
+      curBox.input.title = !name ? "" : inst.value === "helm"
+        ? "helm list -A 의 APP VERSION"
+        : `aws eks describe-addon --cluster-name <이름> --addon-name ${c?.eks_addon || name} 의 addonVersion`;
     }
     sel.addEventListener("change", () => syncInstall());
     inst.addEventListener("change", () => syncInstall(inst.value));
@@ -437,8 +463,7 @@
       el("div", { class: "line l1" }, field("구성요소", sel), field("설치 방식", inst),
         el("button", { type: "button", class: "icon", title: "삭제", onclick: () => row.remove() }, "✕")),
       custom,
-      el("div", { class: "line two" }, field("현재 버전", curBox), field("목표 버전 (선택)", tgtBox)),
-      hint);
+      el("div", { class: "line two" }, field("현재 버전", curBox), field("목표 버전 (선택)", tgtBox)));
     $("addons").append(row);
     syncInstall(data.install);
   }
@@ -533,11 +558,12 @@
   let lastReportName = null;
   function route() {
     const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
-    const tab = ["input", "report", "history"].includes(parts[0]) ? parts[0] : "input";
+    const tab = ["input", "report", "history", "troubleshoot"].includes(parts[0]) ? parts[0] : "input";
     for (const a of document.querySelectorAll("nav.tabs a")) a.classList.toggle("active", a.dataset.tab === tab);
-    for (const v of ["input", "report", "history"]) $(`view-${v}`).hidden = v !== tab;
+    for (const v of ["input", "report", "history", "troubleshoot"]) $(`view-${v}`).hidden = v !== tab;
     if (tab === "report") openReport(parts[1] || lastReportName, parts[2]);
     if (tab === "history") renderHistory();
+    if (tab === "troubleshoot") openTroubleshoot(parts[1]);
     window.scrollTo(0, 0);
   }
   window.addEventListener("hashchange", route);
@@ -705,6 +731,132 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
   $("print").addEventListener("click", () => window.print());
+
+  // ===================== 트러블슈팅 =====================
+  let ts = null; // {phases, symptoms}
+  const tsHash = (id) => `#/troubleshoot/${encodeURIComponent(id)}`;
+
+  // 텍스트 안의 http(s) 링크만 a 태그로 (나머지는 textContent)
+  function linkify(text) {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (const m of String(text).matchAll(/https?:\/\/[^\s)]+/g)) {
+      frag.append(text.slice(last, m.index), el("a", { href: m[0], target: "_blank", rel: "noopener noreferrer" }, m[0]));
+      last = m.index + m[0].length;
+    }
+    frag.append(text.slice(last));
+    return frag;
+  }
+
+  function cmdBlock(cmds) {
+    const box = el("div", { class: "cmds" });
+    for (const c of cmds || []) {
+      const btn = el("button", { type: "button", class: "copy" }, "복사");
+      btn.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(c); }
+        catch (e) {
+          const ta = el("textarea", {}); ta.value = c; document.body.append(ta); ta.select();
+          document.execCommand("copy"); ta.remove();
+        }
+        btn.textContent = "복사됨"; setTimeout(() => { btn.textContent = "복사"; }, 1200);
+      });
+      box.append(el("div", { class: "cmd" }, el("code", {}, c), btn));
+    }
+    return box;
+  }
+
+  const phaseOf = (id) => ts.phases.find((p) => p.id === id);
+  const symptomOf = (id) => ts.symptoms.find((s) => s.id === id);
+  const searchText = (s) => [s.title, ...(s.signs || []), ...s.causes.flatMap((c) => [c.title, c.signs, c.fix])].join(" ").toLowerCase();
+
+  function renderTsNav(activeId) {
+    const q = $("ts-search").value.trim().toLowerCase();
+    const nav = $("ts-nav");
+    nav.replaceChildren(el("a", { href: tsHash("roadmap"), "data-id": "roadmap" }, el("span", { class: "lbl" }, "업그레이드 로드맵")));
+    let shownCount = 0;
+    for (const p of ts.phases) {
+      const items = ts.symptoms.filter((s) => s.phase === p.id && (!q || searchText(s).includes(q)));
+      if (q && !items.length) continue;
+      nav.append(el("a", { href: tsHash(`phase-${p.id}`), "data-id": `phase-${p.id}` }, el("span", { class: "lbl" }, p.title)));
+      for (const s of items) {
+        nav.append(el("a", { href: tsHash(s.id), class: "sub", "data-id": s.id }, el("span", { class: "lbl" }, s.title)));
+        shownCount++;
+      }
+    }
+    if (q && !shownCount) nav.append(el("div", { class: "grp" }, "일치하는 증상이 없습니다."));
+    for (const a of nav.querySelectorAll("a")) a.classList.toggle("active", a.dataset.id === activeId);
+  }
+
+  function phaseCard(p, withSymptoms) {
+    const card = el("section", { class: "phase" },
+      el("h3", {}, p.title), el("p", { class: "goal" }, p.goal),
+      el("h4", {}, "진행 / 확인"), el("ul", {}, ...p.steps.map((x) => el("li", {}, x))));
+    if (p.commands?.length) card.append(el("h4", {}, "확인 명령"), cmdBlock(p.commands));
+    if (p.watch?.length) {
+      card.append(el("h4", {}, "이 단계에서 자주 보이는 문제"));
+      const chips = el("div", { class: "chips" });
+      for (const id of p.watch) { const s = symptomOf(id); if (s) chips.append(el("a", { href: tsHash(id) }, s.title)); }
+      card.append(chips);
+    }
+    if (p.rollback) card.append(el("h4", {}, "롤백"), el("p", { class: "rollback" }, linkify(p.rollback)));
+    if (withSymptoms) {
+      const list = ts.symptoms.filter((s) => s.phase === p.id);
+      if (list.length) {
+        card.append(el("h4", {}, "이 단계의 증상별 진단"));
+        const cards = el("div", { class: "index-cards" });
+        for (const s of list) cards.append(el("a", { href: tsHash(s.id) }, el("span", {}, s.title, el("small", {}, (s.signs || [])[0] || ""))));
+        card.append(cards);
+      }
+    }
+    return card;
+  }
+
+  function renderTsPage(id) {
+    const body = $("ts-body");
+    body.replaceChildren();
+    if (!id || id === "roadmap") {
+      body.append(el("h2", {}, "업그레이드 로드맵"),
+        el("p", { class: "muted" }, "단계 순서대로 진행하면서, 문제가 생기면 해당 단계의 증상을 눌러 진단합니다."));
+      const flow = el("div", { class: "flow" });
+      ts.phases.forEach((p, i) => flow.append(el("a", { href: tsHash(`phase-${p.id}`) }, p.title), ...(i < ts.phases.length - 1 ? [el("span", {}, "→")] : [])));
+      body.append(flow, ...ts.phases.map((p) => phaseCard(p, false)));
+      return;
+    }
+    if (id.startsWith("phase-")) {
+      const p = phaseOf(id.slice(6));
+      if (p) { body.append(phaseCard(p, true)); return; }
+    }
+    const s = symptomOf(id);
+    if (!s) { body.append(el("div", { class: "empty" }, "항목을 찾을 수 없습니다.")); return; }
+    const p = phaseOf(s.phase);
+    body.append(
+      el("div", { class: "crumb" }, el("a", { href: tsHash(`phase-${p.id}`) }, p.title)),
+      el("h2", {}, s.title),
+      el("h4", {}, "① 이런 증상"), el("ul", {}, ...(s.signs || []).map((x) => el("li", {}, x))),
+      el("h4", {}, "② 먼저 확인"), cmdBlock(s.first),
+      el("h4", {}, "③ 원인별 분기"));
+    s.causes.forEach((c, i) => {
+      const card = el("div", { class: "cause" }, el("div", { class: "cause-title" }, `${i + 1}. ${c.title}`));
+      if (c.signs) card.append(el("div", { class: "row" }, el("b", {}, "판단 근거"), el("span", {}, c.signs)));
+      if (c.checks?.length) card.append(el("div", { class: "row" }, el("b", {}, "확인"), cmdBlock(c.checks)));
+      card.append(el("div", { class: "row" }, el("b", {}, "조치"), el("span", {}, linkify(c.fix))));
+      body.append(card);
+    });
+  }
+
+  async function openTroubleshoot(id) {
+    if (!ts) {
+      try { ts = await (await fetch("/api/troubleshooting")).json(); }
+      catch (e) { $("ts-body").replaceChildren(el("div", { class: "empty" }, `불러오지 못했습니다: ${e}`)); return; }
+    }
+    renderTsNav(id || "roadmap");
+    renderTsPage(id || "roadmap");
+  }
+  $("ts-search").addEventListener("input", () => {
+    if (!ts) return;
+    const active = $("ts-nav").querySelector("a.active")?.dataset.id;
+    renderTsNav(active);
+  });
 
   // ===================== 기록 =====================
   async function reportList() {

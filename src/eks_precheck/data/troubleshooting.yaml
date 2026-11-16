@@ -1,0 +1,500 @@
+# EKS 업그레이드 트러블슈팅 로드맵 (웹 UI '트러블슈팅' 탭)
+#
+# 일반적인 진단 가이드입니다. 버전별 변경사항은 리포트에서 확인하고, 여기에는 "증상 → 먼저 볼 것 → 원인별 분기"만 둡니다.
+# 명령은 PowerShell / bash 양쪽에서 그대로 실행되는 형태로 작성합니다 (grep 등 파이프 사용 안 함).
+# <ns>, <pod>, <클러스터> 처럼 꺾쇠로 감싼 부분은 실제 값으로 바꿔 실행합니다.
+#
+# 구조
+#   phases:   업그레이드 단계. watch 에 이 단계에서 주로 보이는 증상 id 를 나열
+#   symptoms: 증상. first = 먼저 실행할 명령, causes = 원인별 분기 (signs: 판단 근거, checks: 확인 명령, fix: 조치)
+
+phases:
+  - id: before
+    title: 0. 사전 준비
+    goal: 업그레이드를 막거나 중간에 멈추게 할 요소를 미리 제거
+    steps:
+      - 리포트의 🔴 항목과 점검 포인트를 확인하고 담당자 지정
+      - EKS Upgrade Insights 가 모두 PASSING 인지 확인
+      - PDB 의 ALLOWED DISRUPTIONS 가 0 인 항목 정리 (노드 교체 시 drain 이 멈춤)
+      - 서브넷 가용 IP, 클러스터 IAM 역할 / 보안 그룹이 그대로인지 확인
+      - 하위 환경(dev / stg)에서 같은 절차로 먼저 수행
+    commands:
+      - aws eks list-insights --cluster-name <클러스터> --filter categories=UPGRADE_READINESS
+      - kubectl get pdb -A
+      - kubectl get nodes -o wide
+    watch: [cp-update-failed]
+    rollback: 아직 변경 전이므로 해당 없음
+
+  - id: control-plane
+    title: 1. 컨트롤 플레인 업그레이드
+    goal: Kubernetes API 서버를 한 마이너 버전 올림 (한 번에 한 단계)
+    steps:
+      - 업데이트 시작 후 진행 상태 확인 (보통 수십 분)
+      - 완료 직후 제거된 API 를 쓰는 배포 / GitOps 동기화가 실패하지 않는지 확인
+      - Admission webhook 이 정상 응답하는지 확인
+    commands:
+      - aws eks list-updates --name <클러스터>
+      - aws eks describe-update --name <클러스터> --update-id <update-id>
+      - kubectl version
+    watch: [cp-update-failed, api-removed, webhook-fail, rbac]
+    rollback: >-
+      EKS 버전 롤백으로 직전 버전으로 되돌릴 수 있습니다 (업그레이드 완료 후 7일 이내, 한 단계만).
+      add-on 과 노드그룹은 함께 되돌아가지 않으므로 노드를 먼저 되돌리고, add-on 은 이전 버전과 호환되는 버전으로 별도 조정합니다.
+      https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html
+
+  - id: addons
+    title: 2. Add-on 업그레이드
+    goal: VPC CNI, CoreDNS, kube-proxy, CSI 드라이버, 컨트롤러를 새 버전과 호환되는 버전으로 맞춤
+    steps:
+      - kube-proxy 는 클러스터 버전에 맞추고, VPC CNI 는 한 번에 한 마이너 버전씩 올리는 것을 권장
+      - EKS 관리형 add-on 의 상태(health)와 충돌(CONFLICT) 여부 확인
+      - Helm 으로 설치한 컨트롤러는 CRD 와 IAM 정책 변경사항을 함께 적용
+    commands:
+      - aws eks list-addons --cluster-name <클러스터>
+      - aws eks describe-addon --cluster-name <클러스터> --addon-name <add-on> --query addon.[addonVersion,status,health]
+      - helm list -A
+      - kubectl -n kube-system get pods -o wide
+    watch: [addon-update-failed, dns, cni-ip, webhook-fail]
+    rollback: >-
+      EKS 관리형 add-on: aws eks update-addon --cluster-name <클러스터> --addon-name <add-on> --addon-version <이전 버전>.
+      Helm: helm history <릴리스> -n <ns> 로 이전 revision 확인 후 helm rollback <릴리스> <revision> -n <ns>.
+
+  - id: nodes
+    title: 3. 노드 업그레이드
+    goal: 노드그룹 / Karpenter 노드를 새 버전 AMI 로 교체
+    steps:
+      - 관리형 노드그룹은 새 AMI 로 롤링 교체됨 (Launch Template 사용 시 AMI ID 갱신 필요)
+      - Karpenter 는 EC2NodeClass 의 AMI 선택 조건에 따라 drift 로 교체됨
+      - 새 노드가 Ready 가 되고 기존 Pod 가 정상 재배치되는지 확인
+    commands:
+      - kubectl get nodes -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,VERSION:.status.nodeInfo.kubeletVersion,OS:.status.nodeInfo.osImage
+      - aws eks describe-nodegroup --cluster-name <클러스터> --nodegroup-name <노드그룹> --query nodegroup.[status,version,releaseVersion]
+      - kubectl get pods -A --field-selector=status.phase=Pending
+    watch: [node-notready, drain-stuck, pending, imagepull]
+    rollback: >-
+      관리형 노드그룹: 이전 Launch Template 버전 / AMI 로 update-nodegroup-version 을 다시 실행.
+      Karpenter: EC2NodeClass 의 AMI 선택 조건을 이전 값으로 되돌리면 drift 로 재교체됨.
+
+  - id: workloads
+    title: 4. Workload 검증
+    goal: 업무 workload 와 트래픽이 정상인지 확인
+    steps:
+      - Running 이 아닌 Pod, 재시작이 늘어나는 Pod 확인
+      - 서비스 / Ingress 응답, HPA, 볼륨 마운트 확인
+      - 모니터링 지표(에러율, 지연)와 로그를 업그레이드 전과 비교
+    commands:
+      - kubectl get pods -A --field-selector=status.phase!=Running
+      - kubectl get events -A --field-selector=type=Warning --sort-by=.lastTimestamp
+      - kubectl top nodes
+    watch: [crashloop, imagepull, svc-traffic, volume, hpa, rbac]
+    rollback: workload 는 배포 도구로 이전 버전 재배포 (kubectl rollout undo deployment/<이름> -n <ns>, helm rollback, GitOps revert)
+
+symptoms:
+  # ---------------- 컨트롤 플레인 ----------------
+  - id: cp-update-failed
+    phase: control-plane
+    title: 컨트롤 플레인 업데이트가 거부되거나 실패
+    signs:
+      - update-cluster-version 요청이 오류로 거부됨
+      - describe-update 의 status 가 Failed
+    first:
+      - aws eks list-updates --name <클러스터>
+      - aws eks describe-update --name <클러스터> --update-id <update-id>
+      - aws eks list-insights --cluster-name <클러스터> --filter categories=UPGRADE_READINESS
+    causes:
+      - title: Upgrade Insights 에 ERROR 항목 (제거될 API 사용, kubelet 버전 차이 등)
+        signs: list-insights 결과에 ERROR 상태 항목이 있음
+        checks:
+          - aws eks describe-insight --cluster-name <클러스터> --id <insight-id>
+        fix: insight 의 권고대로 조치한 뒤 재시도. 영향이 없음을 확인한 경우에만 --force 사용
+      - title: 서브넷 가용 IP 부족
+        signs: 오류 메시지에 IP / subnet 관련 내용
+        checks:
+          - aws eks describe-cluster --name <클러스터> --query cluster.resourcesVpcConfig.subnetIds
+          - aws ec2 describe-subnets --subnet-ids <subnet-id> --query Subnets[].[SubnetId,AvailableIpAddressCount]
+        fix: 클러스터 서브넷에 가용 IP 확보 (EKS 는 업그레이드 시 최대 5개 IP 필요)
+      - title: 클러스터 IAM 역할 / 보안 그룹이 변경·삭제됨
+        signs: 권한(AccessDenied) 또는 보안 그룹 관련 오류
+        checks:
+          - aws eks describe-cluster --name <클러스터> --query cluster.[roleArn,resourcesVpcConfig.clusterSecurityGroupId]
+        fix: 클러스터 생성 시의 IAM 역할과 보안 그룹을 복구
+      - title: 다른 업데이트가 진행 중
+        signs: ResourceInUseException
+        checks:
+          - aws eks list-updates --name <클러스터>
+        fix: 진행 중인 업데이트(add-on, 설정 변경 등)가 끝난 뒤 재시도
+
+  - id: api-removed
+    phase: control-plane
+    title: "배포 / Helm / GitOps 가 'no matches for kind' 로 실패"
+    signs:
+      - "kubectl apply 또는 helm upgrade 가 no matches for kind ... in version ... 오류"
+      - Argo CD 등 GitOps 동기화 실패
+    first:
+      - kubectl api-resources
+      - helm list -A --failed
+    causes:
+      - title: 매니페스트가 제거된 API 버전을 사용
+        signs: 오류의 apiVersion 이 리포트의 '제거되는 API' 목록에 있음
+        checks:
+          - pluto detect-files -d <매니페스트 경로>
+        fix: 매니페스트의 apiVersion 을 대체 버전으로 변경 (리포트 링크의 Deprecation Guide 참고)
+      - title: Helm 릴리스 메타데이터에 제거된 API 가 남아 있음
+        signs: 차트를 고쳤는데도 helm upgrade 가 이전 리소스 때문에 실패
+        checks:
+          - pluto detect-helm -o wide
+        fix: helm-mapkubeapis 플러그인으로 릴리스 메타데이터의 API 버전 변환 (helm mapkubeapis <릴리스> -n <ns>)
+
+  - id: webhook-fail
+    phase: control-plane
+    title: "리소스 생성 / 수정이 'failed calling webhook' 으로 실패"
+    signs:
+      - "Internal error occurred: failed calling webhook ..."
+      - Pod / Ingress / Service 생성이 일괄 실패
+    first:
+      - kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations
+      - kubectl get pods -A -o wide
+    causes:
+      - title: webhook 서버 Pod 가 내려가 있음 (노드 교체 중 등)
+        signs: webhook 의 service 에 연결된 Pod 가 Running 이 아님
+        checks:
+          - kubectl get endpointslices -n <ns>
+        fix: webhook Pod 를 복구. failurePolicy 가 Fail 이면 복구 전까지 관련 리소스 생성이 막힘
+      - title: 인증서 만료 / 갱신 실패
+        signs: 오류에 x509 / certificate 관련 메시지
+        checks:
+          - kubectl get certificates -A
+        fix: cert-manager 등 인증서 발급 컨트롤러 상태 확인 후 재발급
+      - title: 컨트롤 플레인 → 노드 통신 차단
+        signs: 오류에 context deadline exceeded / timeout
+        checks:
+          - aws eks describe-cluster --name <클러스터> --query cluster.resourcesVpcConfig.clusterSecurityGroupId
+        fix: 클러스터 보안 그룹에서 webhook 포트(예 9443, 443)로의 통신 허용 여부 확인
+
+  - id: rbac
+    phase: control-plane
+    title: "'Forbidden' / 권한 오류가 새로 발생"
+    signs:
+      - "kubectl 이나 애플리케이션이 Forbidden / Unauthorized 반환"
+    first:
+      - kubectl auth can-i --list
+      - aws eks list-access-entries --cluster-name <클러스터>
+    causes:
+      - title: 익명(anonymous) 접근 제한 변경
+        signs: 인증 없이 호출하던 health check 외 경로가 401
+        checks:
+          - kubectl get clusterrolebindings -o wide
+        fix: 해당 클라이언트가 인증된 주체(ServiceAccount 등)로 호출하도록 변경
+      - title: 액세스 엔트리 / aws-auth 매핑 누락
+        signs: 특정 IAM 역할 / 사용자만 Unauthorized
+        checks:
+          - aws eks list-access-entries --cluster-name <클러스터>
+          - kubectl -n kube-system get configmap aws-auth -o yaml
+        fix: 액세스 엔트리 또는 aws-auth 에 IAM 주체 매핑 추가
+
+  # ---------------- Add-on ----------------
+  - id: addon-update-failed
+    phase: addons
+    title: EKS 관리형 add-on 업데이트 실패 / Degraded
+    signs:
+      - describe-addon 의 status 가 UPDATE_FAILED 또는 DEGRADED
+      - 업데이트 시 ConfigurationConflict 오류
+    first:
+      - aws eks describe-addon --cluster-name <클러스터> --addon-name <add-on> --query addon.[addonVersion,status,health]
+      - kubectl -n kube-system get pods -o wide
+    causes:
+      - title: 직접 수정한 설정과 충돌
+        signs: health 의 issue 코드가 ConfigurationConflict
+        checks:
+          - aws eks describe-addon --cluster-name <클러스터> --addon-name <add-on> --query addon.health
+        fix: 직접 수정한 값을 configuration values 로 옮긴 뒤 --resolve-conflicts PRESERVE 또는 OVERWRITE 로 재시도
+      - title: add-on 용 IAM 역할 문제 (IRSA / Pod Identity)
+        signs: add-on Pod 로그에 AccessDenied
+        checks:
+          - aws eks describe-addon --cluster-name <클러스터> --addon-name <add-on> --query addon.serviceAccountRoleArn
+        fix: 역할의 신뢰 정책과 권한 정책을 새 버전 요구사항에 맞게 수정
+      - title: 클러스터 버전과 호환되지 않는 add-on 버전
+        signs: 지정한 버전이 describe-addon-versions 목록에 없음
+        checks:
+          - aws eks describe-addon-versions --addon-name <add-on> --kubernetes-version <버전> --query addons[].addonVersions[].addonVersion
+        fix: 호환 목록의 버전(또는 기본 버전)으로 지정
+
+  - id: dns
+    phase: addons
+    title: DNS 조회 실패 (서비스 이름으로 연결 안 됨)
+    signs:
+      - "애플리케이션 로그에 no such host / i/o timeout (53 포트)"
+    first:
+      - kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide
+      - kubectl -n kube-system logs -l k8s-app=kube-dns --tail=50
+      - kubectl run dnstest --image=busybox:1.36 --rm -it --restart=Never -- nslookup kubernetes.default
+    causes:
+      - title: CoreDNS Pod 가 Pending / CrashLoop
+        signs: kube-dns 라벨 Pod 가 Running 이 아님
+        checks:
+          - kubectl -n kube-system describe pod -l k8s-app=kube-dns
+        fix: 노드 용량 / 스케줄링 조건 확인, CoreDNS 를 클러스터 버전과 호환되는 버전으로 맞춤
+      - title: kube-proxy 미동작 / 버전 불일치
+        signs: kube-proxy Pod 오류, Service IP 로 연결 안 됨
+        checks:
+          - kubectl -n kube-system get pods -l k8s-app=kube-proxy -o wide
+          - kubectl -n kube-system logs -l k8s-app=kube-proxy --tail=50
+        fix: kube-proxy 를 클러스터 버전에 맞는 버전으로 업데이트
+      - title: 보안 그룹 / NetworkPolicy 가 53 포트 차단
+        signs: CoreDNS 는 정상인데 특정 노드 / 네임스페이스에서만 실패
+        checks:
+          - kubectl get networkpolicies -A
+        fix: 노드 보안 그룹과 NetworkPolicy 에서 TCP/UDP 53 허용
+
+  - id: cni-ip
+    phase: addons
+    title: "Pod 가 ContainerCreating 에서 멈춤 (IP 할당 실패)"
+    signs:
+      - "events 에 failed to assign an IP address / network plugin not ready"
+    first:
+      - kubectl describe pod <pod> -n <ns>
+      - kubectl -n kube-system get pods -l k8s-app=aws-node -o wide
+      - kubectl -n kube-system logs -l k8s-app=aws-node -c aws-node --tail=50
+    causes:
+      - title: 서브넷 IP 고갈
+        signs: aws-node 로그에 InsufficientFreeAddressesInSubnet 등
+        checks:
+          - aws ec2 describe-subnets --subnet-ids <subnet-id> --query Subnets[].[SubnetId,AvailableIpAddressCount]
+        fix: 서브넷 추가 / prefix delegation / 노드 교체 시 surge 수 조정
+      - title: aws-node(VPC CNI) Pod 오류
+        signs: aws-node Pod 가 CrashLoop 이거나 IAM 권한 오류
+        checks:
+          - aws eks describe-addon --cluster-name <클러스터> --addon-name vpc-cni --query addon.[addonVersion,health]
+        fix: VPC CNI 버전 / IAM 역할(AmazonEKS_CNI_Policy) 확인, 한 마이너씩 업데이트
+
+  # ---------------- 노드 ----------------
+  - id: node-notready
+    phase: nodes
+    title: 새 노드가 NotReady 이거나 클러스터에 조인하지 않음
+    signs:
+      - kubectl get nodes 에 새 노드가 안 보이거나 NotReady
+      - 노드그룹 업데이트가 NodeCreationFailure 로 실패
+    first:
+      - kubectl get nodes -o wide
+      - kubectl describe node <노드>
+      - aws ec2 get-console-output --instance-id <instance-id> --latest --output text
+    causes:
+      - title: 노드 IAM 역할 매핑 누락 (액세스 엔트리 / aws-auth)
+        signs: 노드가 아예 등록되지 않음, kubelet 로그에 Unauthorized
+        checks:
+          - aws eks list-access-entries --cluster-name <클러스터>
+          - kubectl -n kube-system get configmap aws-auth -o yaml
+        fix: 노드 역할을 EC2_LINUX 유형 액세스 엔트리 또는 aws-auth 에 등록
+      - title: Launch Template user data 가 새 AMI 와 맞지 않음
+        signs: AL2 용 bootstrap.sh 를 AL2023 에서 사용 (AL2023 은 nodeadm NodeConfig), 제거된 kubelet 플래그 사용
+        checks:
+          - aws ec2 describe-launch-template-versions --launch-template-id <lt-id> --versions '$Latest' --query LaunchTemplateVersions[0].LaunchTemplateData.UserData --output text
+        fix: AMI 종류에 맞는 user data 형식으로 수정하고 제거된 kubelet 플래그 삭제
+      - title: CNI 미준비로 NotReady
+        signs: describe node 의 Ready 조건 메시지에 network plugin / cni 관련 내용
+        checks:
+          - kubectl -n kube-system get pods -l k8s-app=aws-node -o wide
+        fix: "'Pod 가 ContainerCreating 에서 멈춤 (IP 할당 실패)' 항목 참고"
+      - title: cgroup v1 노드 (cgroup v2 필수 버전)
+        signs: kubelet 이 시작되지 않고 cgroup 관련 오류
+        checks:
+          - kubectl get nodes -o custom-columns=NAME:.metadata.name,OS:.status.nodeInfo.osImage
+        fix: AL2023 / Bottlerocket 등 cgroup v2 AMI 로 전환
+
+  - id: drain-stuck
+    phase: nodes
+    title: 노드 교체(drain)가 멈추거나 노드그룹 업데이트 실패
+    signs:
+      - 오래된 노드가 SchedulingDisabled 로 계속 남음
+      - 노드그룹 업데이트가 PodEvictionFailure 로 실패
+    first:
+      - kubectl get pdb -A
+      - kubectl get pods -A -o wide --field-selector=spec.nodeName=<노드>
+      - aws eks describe-update --name <클러스터> --nodegroup-name <노드그룹> --update-id <update-id>
+    causes:
+      - title: PDB 때문에 eviction 불가
+        signs: PDB 의 ALLOWED DISRUPTIONS 가 0
+        checks:
+          - kubectl describe pdb <pdb> -n <ns>
+        fix: replicas 를 늘리거나 PDB 를 일시 완화. 영향을 확인한 경우에만 노드그룹 업데이트의 --force 사용
+      - title: 컨트롤러 없는 Pod / 로컬 스토리지 Pod
+        signs: 해당 노드에 Deployment 등에 속하지 않은 Pod 존재
+        checks:
+          - kubectl get pods -A -o wide --field-selector=spec.nodeName=<노드>
+        fix: 해당 Pod 를 수동으로 옮기거나 정리
+
+  - id: pending
+    phase: nodes
+    title: Pod 가 Pending 에서 넘어가지 않음
+    signs:
+      - "events 에 FailedScheduling / 0/N nodes are available"
+    first:
+      - kubectl describe pod <pod> -n <ns>
+      - kubectl get nodes --show-labels
+    causes:
+      - title: 노드 라벨 / taint 가 바뀌어 nodeSelector · affinity · toleration 불일치
+        signs: "events 에 didn't match Pod's node affinity/selector / untolerated taint"
+        checks:
+          - kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+        fix: 새 노드그룹 / NodePool 의 라벨과 taint 를 이전과 맞추거나 workload 설정 수정
+      - title: 용량 부족 / Karpenter 가 노드를 만들지 못함
+        signs: "events 에 Insufficient cpu/memory, NodeClaim 생성 실패"
+        checks:
+          - kubectl get nodeclaims
+          - kubectl -n kube-system logs deploy/karpenter --tail=100
+        fix: NodePool 요구 조건 / 한도 확인, Karpenter 버전이 새 Kubernetes 버전을 지원하는지 확인
+      - title: EBS 볼륨과 노드의 가용영역 불일치
+        signs: "events 에 volume node affinity conflict"
+        checks:
+          - kubectl get pv -o custom-columns=NAME:.metadata.name,ZONE:.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values
+        fix: 해당 AZ 에 노드가 뜨도록 노드그룹 / NodePool 의 서브넷 구성 확인
+
+  # ---------------- Workload ----------------
+  - id: crashloop
+    phase: workloads
+    title: Pod CrashLoopBackOff
+    signs:
+      - STATUS 가 CrashLoopBackOff, RESTARTS 가 계속 증가
+    first:
+      - kubectl describe pod <pod> -n <ns>
+      - kubectl logs <pod> -n <ns> --previous
+      - kubectl get events -n <ns> --sort-by=.lastTimestamp
+    causes:
+      - title: 메모리 부족 (OOMKilled)
+        signs: "describe 의 Last State 에 Reason: OOMKilled"
+        checks:
+          - kubectl top pod <pod> -n <ns>
+        fix: memory limit 조정. cgroup v2 AMI 로 바뀐 뒤라면 런타임의 cgroup v2 지원 여부도 확인 (예 Java 8u372 / 11.0.16 / 15 이상)
+      - title: 제거되거나 바뀐 Kubernetes API 를 애플리케이션 / 오퍼레이터가 호출
+        signs: "로그에 the server could not find the requested resource / no matches for kind"
+        checks:
+          - kubectl api-resources
+        fix: 오퍼레이터 / 클라이언트 라이브러리를 새 Kubernetes 버전을 지원하는 버전으로 업그레이드
+      - title: CPU 아키텍처 불일치
+        signs: "로그에 exec format error"
+        checks:
+          - kubectl get nodes -L kubernetes.io/arch
+        fix: 멀티 아키텍처 이미지 사용 또는 nodeSelector 로 아키텍처 고정
+      - title: liveness probe 실패로 재시작
+        signs: "events 에 Liveness probe failed"
+        checks:
+          - kubectl get pod <pod> -n <ns> -o yaml
+        fix: 기동 시간이 늘었다면 startupProbe / initialDelaySeconds 조정, probe 대상 경로 확인
+      - title: AWS 권한 오류 (IRSA / Pod Identity)
+        signs: "로그에 AccessDenied / WebIdentityErr / no credentials"
+        checks:
+          - kubectl get serviceaccount <sa> -n <ns> -o yaml
+          - aws eks list-pod-identity-associations --cluster-name <클러스터>
+        fix: ServiceAccount 의 역할 연결과 IAM 신뢰 정책(OIDC / Pod Identity) 확인
+      - title: 설정 / 환경변수 / 의존 서비스 오류
+        signs: 로그에 애플리케이션 설정 오류, DB 등 연결 실패
+        checks:
+          - kubectl get configmap,secret -n <ns>
+        fix: 애플리케이션 설정과 의존 서비스 연결(DNS, 보안 그룹) 확인. DNS 문제면 'DNS 조회 실패' 항목 참고
+
+  - id: imagepull
+    phase: workloads
+    title: ImagePullBackOff / ErrImagePull
+    signs:
+      - STATUS 가 ImagePullBackOff 또는 ErrImagePull
+    first:
+      - kubectl describe pod <pod> -n <ns>
+      - kubectl get events -n <ns> --field-selector=reason=Failed --sort-by=.lastTimestamp
+    causes:
+      - title: ECR 인증 / 권한 없음
+        signs: "events 에 no basic auth credentials / 403 Forbidden / not authorized to perform ecr:"
+        checks:
+          - aws iam list-attached-role-policies --role-name <노드 역할>
+        fix: 노드 역할에 ECR 읽기 정책(AmazonEC2ContainerRegistryReadOnly 등) 연결, 다른 계정 ECR 이면 리포지토리 정책 확인
+      - title: 네트워크로 레지스트리에 도달 불가
+        signs: "events 에 i/o timeout / dial tcp / context deadline exceeded"
+        checks:
+          - aws ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=<vpc-id> --query VpcEndpoints[].ServiceName
+        fix: 새 노드의 서브넷에 NAT 경로 또는 VPC 엔드포인트(ecr.api, ecr.dkr, S3 게이트웨이) 확인
+      - title: 이미지 / 태그 없음
+        signs: "events 에 not found / manifest unknown"
+        checks:
+          - aws ecr describe-images --repository-name <리포지토리> --image-ids imageTag=<태그>
+        fix: 이미지 경로와 태그 확인. k8s.gcr.io 를 쓰고 있다면 registry.k8s.io 로 변경
+      - title: 노드 아키텍처용 이미지 없음
+        signs: "events 에 no matching manifest for linux/arm64 (또는 amd64)"
+        checks:
+          - kubectl get nodes -L kubernetes.io/arch
+        fix: 멀티 아키텍처 이미지 빌드 또는 nodeSelector 로 아키텍처 고정
+      - title: containerd 2.x 에서 지원하지 않는 오래된 이미지 형식
+        signs: 노드 AMI 변경 후 특정 오래된 이미지만 pull 실패 (Docker image manifest schema 1)
+        checks:
+          - kubectl get nodes -o custom-columns=NAME:.metadata.name,RUNTIME:.status.nodeInfo.containerRuntimeVersion
+        fix: 해당 이미지를 최신 빌드 도구로 다시 빌드 / push
+      - title: Docker Hub 요청 한도 초과
+        signs: "events 에 toomanyrequests"
+        checks:
+          - kubectl get pods -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,IMAGE:.spec.containers[*].image
+        fix: ECR pull through cache 등 미러 사용 또는 인증된 pull(imagePullSecrets)
+
+  - id: svc-traffic
+    phase: workloads
+    title: Service / Ingress 로 트래픽이 들어오지 않음 (5xx, 연결 실패)
+    signs:
+      - 로드밸런서 5xx, 타겟 unhealthy
+    first:
+      - kubectl get endpointslices -n <ns>
+      - kubectl describe ingress <ingress> -n <ns>
+      - kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=100
+    causes:
+      - title: readiness 실패로 endpoint 가 비어 있음
+        signs: endpointslice 의 ENDPOINTS 가 비어 있음
+        checks:
+          - kubectl get pods -n <ns> -o wide
+        fix: Pod readiness 원인 해결 (CrashLoop / probe 항목 참고)
+      - title: AWS Load Balancer Controller 버전 / IAM 정책 불일치
+        signs: 컨트롤러 로그에 AccessDenied 또는 reconcile 오류
+        checks:
+          - helm list -n kube-system
+        fix: 클러스터 버전을 지원하는 컨트롤러 버전과 해당 버전의 IAM 정책 적용
+      - title: Ingress NGINX 등 컨트롤러 변경 영향
+        signs: ingressClass 를 처리하는 컨트롤러 Pod 가 없음
+        checks:
+          - kubectl get ingressclass
+        fix: 컨트롤러 상태 확인, 지원 종료된 컨트롤러는 대체(Gateway API 등) 계획 수립
+
+  - id: volume
+    phase: workloads
+    title: "볼륨 마운트 실패 (FailedAttachVolume / FailedMount)"
+    signs:
+      - "Pod 가 ContainerCreating 에서 멈추고 events 에 FailedAttachVolume / FailedMount / Multi-Attach error"
+    first:
+      - kubectl describe pod <pod> -n <ns>
+      - kubectl get volumeattachments
+      - kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-ebs-csi-driver -o wide
+    causes:
+      - title: EBS CSI 드라이버 미동작 / 권한 오류
+        signs: ebs-csi-controller 로그에 AccessDenied 또는 Pod 오류
+        checks:
+          - kubectl -n kube-system logs deploy/ebs-csi-controller -c ebs-plugin --tail=50
+        fix: CSI 드라이버 버전과 IAM 역할(AmazonEBSCSIDriverPolicy) 확인
+      - title: 이전 노드에서 볼륨이 아직 분리되지 않음 (Multi-Attach)
+        signs: "events 에 Multi-Attach error"
+        checks:
+          - kubectl get volumeattachments
+        fix: 이전 노드 종료 / 분리를 기다림. 강제로 지우기 전에 데이터 손상 위험 검토
+      - title: 볼륨과 노드의 가용영역 불일치
+        signs: "events 에 volume node affinity conflict"
+        checks:
+          - kubectl get pv <pv> -o yaml
+        fix: 볼륨이 있는 AZ 에 노드가 생성되도록 구성
+
+  - id: hpa
+    phase: workloads
+    title: "HPA 가 동작하지 않음 / kubectl top 실패"
+    signs:
+      - "HPA TARGETS 가 <unknown>, kubectl top 이 Metrics API not available"
+    first:
+      - kubectl get apiservice v1beta1.metrics.k8s.io
+      - kubectl -n kube-system get pods -l k8s-app=metrics-server -o wide
+    causes:
+      - title: metrics-server 미동작 / 버전 불일치
+        signs: apiservice 의 AVAILABLE 이 False
+        checks:
+          - kubectl -n kube-system logs -l k8s-app=metrics-server --tail=50
+        fix: 클러스터 버전을 지원하는 metrics-server 버전으로 업데이트, 컨트롤 플레인 → 노드 10250 포트 통신 확인

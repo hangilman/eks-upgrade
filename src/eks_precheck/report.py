@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import checkpoints
 from .models import CRITICAL, REVIEW, SECURITY, ComponentReport, Report, VersionReport
 
 ICON = {CRITICAL: "🔴", REVIEW: "🟡", SECURITY: "🔒"}
@@ -80,6 +81,39 @@ def _cluster_section(report: Report) -> list[str]:
     return out
 
 
+def _version_counts(v: VersionReport) -> dict[str, int]:
+    return {
+        "제거 API": len(v.removed_apis), "EKS 중요 공지": len(v.eks_important), "Urgent Upgrade Notes": len(v.urgent_notes),
+        "EKS 변경 상세": len(v.eks_subsections), "Deprecation": len(v.deprecations), "API Change": len(v.api_changes),
+    }
+
+
+def _version_points(v: VersionReport, limit: int | None = None) -> list:
+    critical = [f"{r.resource} {r.summary} 제거되는 API" for r in v.removed_apis] + v.eks_important + v.urgent_notes
+    review = [f"{t} {b}" for t, b in v.eks_subsections] + v.deprecations + v.api_changes
+    return checkpoints.prioritized(critical, review, limit)
+
+
+def _component_points(c: ComponentReport, limit: int | None = None) -> list:
+    return checkpoints.prioritized([f.text for f in c.findings if f.severity == CRITICAL],
+                                   [f.text for f in c.findings if f.severity != CRITICAL], limit)
+
+
+def _version_severity(v: VersionReport) -> tuple[int, int]:
+    c = _version_counts(v)
+    crit = c["제거 API"] + c["EKS 중요 공지"] + c["Urgent Upgrade Notes"] + (v.eks_status == "not_yet")
+    review = c["EKS 변경 상세"] + c["Deprecation"] + c["API Change"] + (v.eks_status == "unverified")
+    return crit, review
+
+
+def _summary_block(counts: dict[str, int], points: list) -> list[str]:
+    nonzero = [f"{k} {n}건" for k, n in counts.items() if n]
+    out = ["#### 📋 요약", "", "- " + (" · ".join(nonzero) if nonzero else "업그레이드 영향 항목이 없습니다."), ""]
+    if points:
+        out += ["#### 🔍 점검 포인트", ""] + checkpoints.render(points) + [""]
+    return out
+
+
 def _version_section(v: VersionReport, limit: int) -> list[str]:
     status = {"standard": "EKS standard support", "extended": "EKS extended support (추가 비용)",
               "not_yet": "🔴 EKS 미지원 (아직 출시 전)", "ended": "EKS 지원 종료",
@@ -94,6 +128,7 @@ def _version_section(v: VersionReport, limit: int) -> list[str]:
         out += [f"> {icon} {v.eks_status_note}", ""]
     if not v.upstream_released:
         out += [f"> ℹ️ 업스트림 Kubernetes 에도 아직 v{v.minor}.0 정식 릴리스가 없어 변경사항을 수집하지 못했습니다.", ""]
+    out += _summary_block(_version_counts(v), _version_points(v))
     if v.removed_apis:
         out += ["#### 🔴 제거되는 API (더 이상 serve 되지 않음)", ""]
         for r in v.removed_apis:
@@ -130,6 +165,12 @@ def _component_section(c: ComponentReport, limit: int, target_minor: str) -> lis
         out.append(f"- 분석한 릴리스 ({len(c.release_tags)}개): {tags}")
     out += [f"- ℹ️ {n}" for n in c.notes]
     out.append("")
+
+    counts = {label: sum(1 for f in c.findings if f.severity == sev)
+              for sev, label in ((CRITICAL, "Breaking / Action required"), (SECURITY, "보안 수정"), (REVIEW, "Deprecation / 동작 변경"))}
+    counts["관련 오픈 이슈"] = len(c.issues)
+    if c.repo and not c.fetch_failed:
+        out += _summary_block(counts, _component_points(c))
 
     if c.compat and c.compat.per_minor:
         out += ["| Kubernetes | 현재 버전 호환 | 기본(default) 버전 | 최신 버전 |", "|---|---|---|---|"]
@@ -217,6 +258,28 @@ def _impact_table(report: Report) -> list[str]:
         out.append(
             f"| {c.name} | {span} | {rel} | {cnt[CRITICAL] or ''} | {cnt[SECURITY] or ''} | {cnt[REVIEW] or ''} | {len(c.issues) or ''} |"
         )
+    return out + [""]
+
+
+def _section_summary(report: Report) -> list[str]:
+    """요약 화면용: 항목별 🔴/🟡 건수와 먼저 볼 점검 포인트."""
+    rows = []
+    for v in report.versions:
+        crit, review = _version_severity(v)
+        points = _version_points(v, limit=3)
+        rows.append((f"Kubernetes {v.minor}", crit, review, points))
+    for c in report.components:
+        if not c.repo or c.fetch_failed:
+            continue
+        crit = sum(1 for f in c.findings if f.severity == CRITICAL)
+        review = sum(1 for f in c.findings if f.severity in (REVIEW, SECURITY))
+        rows.append((c.name, crit, review, _component_points(c, limit=3)))
+    if not rows:
+        return []
+    out = ["### 항목별 점검 요약", "", "| 항목 | 🔴 | 🟡 | 먼저 확인할 것 |", "|---|---|---|---|"]
+    for name, crit, review, points in rows:
+        todo = " / ".join(p.title for p in points) or "-"
+        out.append(f"| {name} | {crit or ''} | {review or ''} | {_esc(todo)} |")
     return out + [""]
 
 
@@ -313,6 +376,7 @@ def render(report: Report, limit: int = 20) -> str:
         "",
     ]
     out += _impact_table(report)
+    out += _section_summary(report)
     n = 1
     if report.cluster:
         out += _cluster_section(report)

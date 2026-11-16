@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -50,7 +51,8 @@ def from_aws_cli(profile: str | None = None, region: str | None = None, timeout:
     if region:
         cmd += ["--region", region]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=timeout, env={**os.environ, "AWS_PAGER": ""})
     except (OSError, subprocess.SubprocessError) as e:
         return None, f"AWS CLI 실행 실패: {e}"
     if out.returncode != 0:

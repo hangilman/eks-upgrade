@@ -20,7 +20,7 @@ from importlib import resources
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, config, envfile, precheck, versions
+from . import __version__, config, envfile, precheck, troubleshoot, versions
 from .http import DEFAULT_CACHE_DIR, FetchError, HttpClient
 from .md_render import render_html
 from .report import render
@@ -149,12 +149,21 @@ class App:
                         "source": f"AWS API (describe-addon-versions{', Kubernetes ' + k8s if k8s else ''})"}
             except AwsCliError as e:
                 errors.append(str(e))
-        if spec.get("repo"):
+        repo = spec.get("repo") or spec.get("version_repo")
+        if repo:
             try:
-                releases = GitHub(self.http_factory(False)).releases(spec["repo"], max_pages=1)
-                vs = [versions.fmt(v) for v, _ in versioned(
-                    releases, spec.get("tag_pattern", DEFAULT_TAG_PATTERN), spec.get("tag_prefix", ""))]
-                return {"versions": vs[::-1][:40], "default": None, "source": "GitHub Release", "notes": errors}
+                same_minor = spec.get("versions_match_k8s_minor") and k8s
+                releases = GitHub(self.http_factory(False)).releases(repo, max_pages=2 if same_minor else 1)
+                pairs = versioned(releases, spec.get("tag_pattern", DEFAULT_TAG_PATTERN), spec.get("tag_prefix", ""))
+                if same_minor:
+                    want = versions.parse_minor(k8s)
+                    pairs = [(v, r) for v, r in pairs if v[:2] == want]
+                vs = [versions.fmt(v) for v, _ in pairs][::-1][:40]
+                source = "GitHub Release"
+                if spec.get("version_repo") and not spec.get("repo"):
+                    source = (f"Kubernetes {k8s or ''} 업스트림 패치 버전 (EKS add-on 실제 버전에는 -eksbuild.N 이 붙음)"
+                              + (f" · AWS CLI 조회 실패: {errors[0]}" if errors else ""))
+                return {"versions": vs, "default": None, "source": source, "notes": errors}
             except FetchError as e:
                 errors.append(f"GitHub Release 조회 실패: {e}")
         return {"versions": [], "source": "", "error": "; ".join(errors) or "버전 목록을 제공하지 않는 컴포넌트"}
@@ -270,6 +279,8 @@ def make_handler(app: App, port_ref: dict):
             if path == "/api/init":
                 return self._json(HTTPStatus.OK, app.init_payload())
             q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items() if v and v[0]}
+            if path == "/api/troubleshooting":
+                return self._json(HTTPStatus.OK, troubleshoot.load())
             if path == "/api/versions":
                 return self._json(HTTPStatus.OK, app.cluster_versions(q.get("profile"), q.get("region")))
             if path == "/api/component-versions":

@@ -3,8 +3,23 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+
+
+def cli_env() -> dict:
+    """AWS CLI v2 의 페이저(less/more)가 응답을 막지 않도록 끈다."""
+    return {**os.environ, "AWS_PAGER": ""}
+
+
+def explain(msg: str) -> str:
+    low = msg.lower()
+    if "must specify a region" in low or "region" in low and "not" in low and "specif" in low:
+        return msg + " → 옵션의 AWS region 을 입력하거나 `aws configure set region <리전>` 으로 기본 리전을 설정하세요."
+    if "unable to locate credentials" in low or "expired" in low or "sso" in low and "token" in low:
+        return msg + " → AWS CLI 로그인 상태를 확인하세요 (`aws sts get-caller-identity`)."
+    return msg
 
 
 class AwsCliError(Exception):
@@ -21,12 +36,15 @@ def run_json(args: list[str], profile: str | None = None, region: str | None = N
     if region:
         cmd += ["--region", region]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=timeout, env=cli_env())
+    except subprocess.TimeoutExpired as e:
+        raise AwsCliError(f"AWS CLI 응답 시간 초과 ({timeout}초)") from e
     except (OSError, subprocess.SubprocessError) as e:
         raise AwsCliError(f"AWS CLI 실행 실패: {e}") from e
     if out.returncode != 0:
         msg = [ln for ln in (out.stderr or out.stdout).strip().splitlines() if ln.strip()]
-        raise AwsCliError("AWS CLI 오류: " + (msg[-1] if msg else f"exit {out.returncode}"))
+        raise AwsCliError(explain("AWS CLI 오류: " + (msg[-1] if msg else f"exit {out.returncode}")))
     try:
         return json.loads(out.stdout or "null")
     except ValueError as e:
@@ -39,7 +57,7 @@ def default_region(profile: str | None = None) -> str | None:
         return None
     cmd = [aws, "configure", "get", "region"] + (["--profile", profile] if profile else [])
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, env=cli_env())
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout.strip() or None
